@@ -23,6 +23,8 @@ what Google ships" — please read this file before opening a PR.
 
 ## Local development
 
+Requires Rust 1.80 or newer (see `rust-version` in `Cargo.toml`).
+
 ```sh
 git clone https://github.com/DatanoiseTV/esparagus
 cd esparagus

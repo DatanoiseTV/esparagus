@@ -1098,11 +1098,11 @@ fn write_payload(
             if let Some(b) = bar.as_ref() {
                 b.set_position(written);
             }
-            let pct = if total == 0 {
-                100
-            } else {
-                (written * 100 / total) as u32
-            };
+            let pct = written
+                .checked_mul(100)
+                .and_then(|n| n.checked_div(total))
+                .map(|p| p as u32)
+                .unwrap_or(100);
             if pct >= last_pct + 5 || pct == 100 {
                 last_pct = pct;
                 emit_for_progress.info(Event::WriteProgress {
@@ -1234,11 +1234,11 @@ fn write_one(
             if let Some(b) = bar.as_ref() {
                 b.set_position(written);
             }
-            let pct = if total == 0 {
-                100
-            } else {
-                (written * 100 / total) as u32
-            };
+            let pct = written
+                .checked_mul(100)
+                .and_then(|n| n.checked_div(total))
+                .map(|p| p as u32)
+                .unwrap_or(100);
             if pct >= last_pct + 5 || pct == 100 {
                 last_pct = pct;
                 emit_for_progress.info(Event::WriteProgress {

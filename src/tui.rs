@@ -241,11 +241,9 @@ fn nvs_event_loop(
                     KeyCode::Char('/') => {
                         state.editing_filter = true;
                     }
-                    KeyCode::Enter => {
+                    KeyCode::Enter if state.selected_item().is_some() => {
                         // Drop into the per-entry hex / ASCII detail.
-                        if state.selected_item().is_some() {
-                            state.detail_view = Some(0);
-                        }
+                        state.detail_view = Some(0);
                     }
                     _ => {}
                 }
