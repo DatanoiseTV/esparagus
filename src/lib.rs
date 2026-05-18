@@ -6,6 +6,7 @@
 pub mod chip;
 pub mod cli;
 pub mod error;
+pub mod esptool_compat;
 pub mod image;
 pub mod imagegen;
 pub mod monitor;

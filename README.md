@@ -257,6 +257,45 @@ for the full mapping.
   diagnostic hint engine
 - `src/cli.rs` + `src/runner.rs` — CLI parsing and orchestration
 
+## Drop-in for `esptool.py` (busybox-style multi-call)
+
+esparagus is also a **multi-call binary** in the BusyBox sense: when invoked
+through an `esptool` name (typically a symlink), it translates the CLI on
+the fly so tools and scripts written against upstream `esptool.py` keep
+working unmodified. The most useful case is `idf.py flash`, which shells
+out to `esptool.py` internally.
+
+```sh
+# Install the alias (drop a symlink earlier on $PATH than the real esptool.py)
+ln -s "$(which esparagus)" ~/.local/bin/esptool.py
+
+# Now this runs esparagus under the hood:
+esptool.py --chip esp32-s3 --port /dev/cu.usbserial-XYZ \
+  --before default_reset --after hard_reset \
+  write_flash 0x0 boot.bin 0x10000 app.bin
+
+# And so does idf.py:
+idf.py -p /dev/cu.usbserial-XYZ flash
+```
+
+What the compat layer does to the argv:
+
+- Underscore subcommand names → hyphenated (`write_flash` → `write-flash`).
+- `chip_id` → `detect` (semantically equivalent — both read the chip ID via
+  GET_SECURITY_INFO).
+- Underscored `--before`/`--after` values → hyphenated
+  (`default_reset` → `default-reset`).
+- `read_flash <addr> <size> <out>` positional → `read-flash --address X
+  --size Y --output Z`.
+- Flags esparagus doesn't honour yet (`--flash_mode`, `--flash_freq`,
+  `--flash_size`, `--erase-all`, `--encrypt`) are stripped with a stderr
+  warning so the run still succeeds. Flash params come from the image
+  header in normal IDF builds anyway.
+- Subcommands esparagus genuinely doesn't implement (`image_info`,
+  `verify_flash`, `dump_mem`, `load_ram`, `read_mem`, `write_mem`,
+  `make_image`, `summary`, `get_security_info`) print a clear error
+  pointing at upstream esptool and exit 2.
+
 ## Provenance and licensing
 
 esparagus is a Rust port of esptool's protocol implementation. Because
