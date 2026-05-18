@@ -68,7 +68,41 @@ pub struct Chip {
     pub has_usb_otg: bool,
 
     /// Embedded stub filename in `stubs/<name>.json` (compile-time include).
+    /// For chips with multiple silicon-revision variants, this is the default.
     pub stub_blob_name: &'static str,
+
+    /// Per-chip hook that overrides `stub_blob_name` based on actual silicon
+    /// (e.g. ESP32-P4 picks `esp32p4-rev1` when major revision < 3).
+    pub stub_blob_selector: Option<StubBlobSelector>,
+
+    /// EFUSE_BLOCK1_ADDR — base of the first usable EFUSE block, where chip
+    /// revision and package info live.  Used by `stub_blob_selector` and any
+    /// other code that reads chip-specific configuration.
+    pub efuse_block1_addr: u32,
+}
+
+/// A chip-specific function that picks the right stub blob name at runtime,
+/// usually by reading EFUSE-resident silicon revision bits.
+pub type StubBlobSelector =
+    fn(&Chip, &mut crate::protocol::Connection) -> crate::error::Result<&'static str>;
+
+/// ESP32-P4 has two stub variants — one for silicon rev < 3.00, one for the
+/// rest.  Picking wrong causes the stub to crash on entry and never emit OHAI.
+pub fn esp32p4_stub_selector(
+    chip: &Chip,
+    conn: &mut crate::protocol::Connection,
+) -> crate::error::Result<&'static str> {
+    // EFUSE BLOCK1 word 2 holds the revision bits; mirrored from upstream
+    // ESP32P4ROM.get_major_chip_version() / get_minor_chip_version().
+    let word = conn.read_reg(chip.efuse_block1_addr + 4 * 2)?;
+    let minor = (word & 0x0F) as u32;
+    let major = ((((word >> 23) & 1) << 2) | ((word >> 4) & 0x03)) as u32;
+    let revision = major * 100 + minor;
+    Ok(if revision < 300 {
+        "esp32p4-rev1"
+    } else {
+        "esp32p4"
+    })
 }
 
 /// All supported chips.  Order doesn't matter; detection iterates the slice.
@@ -105,6 +139,8 @@ pub const REGISTRY: &[Chip] = &[
         has_usb_jtag_serial: false,
         has_usb_otg: false,
         stub_blob_name: "esp32",
+        stub_blob_selector: None,
+        efuse_block1_addr: 0x3FF5A044,
     },
     // ESP32-S2 — magic 0x000007C6, EFUSE in MMIO range 0x3F41A000.
     Chip {
@@ -138,6 +174,8 @@ pub const REGISTRY: &[Chip] = &[
         has_usb_jtag_serial: false,
         has_usb_otg: true,
         stub_blob_name: "esp32s2",
+        stub_blob_selector: None,
+        efuse_block1_addr: 0x3F41A044,
     },
     // ESP32-S3 — uses chip_id (GET_SECURITY_INFO) for detection.
     Chip {
@@ -171,6 +209,8 @@ pub const REGISTRY: &[Chip] = &[
         has_usb_jtag_serial: true,
         has_usb_otg: true,
         stub_blob_name: "esp32s3",
+        stub_blob_selector: None,
+        efuse_block1_addr: 0x60007044,
     },
     // ESP32-C2 — magic via chip_id (inherits from C3).
     Chip {
@@ -204,6 +244,8 @@ pub const REGISTRY: &[Chip] = &[
         has_usb_jtag_serial: false,
         has_usb_otg: false,
         stub_blob_name: "esp32c2",
+        stub_blob_selector: None,
+        efuse_block1_addr: 0x60008844,
     },
     // ESP32-C3 — chip_id based detection.
     Chip {
@@ -237,6 +279,8 @@ pub const REGISTRY: &[Chip] = &[
         has_usb_jtag_serial: true,
         has_usb_otg: false,
         stub_blob_name: "esp32c3",
+        stub_blob_selector: None,
+        efuse_block1_addr: 0x60008844,
     },
     // ESP32-C6 — chip_id based detection. SPI base differs from C3.
     Chip {
@@ -271,6 +315,8 @@ pub const REGISTRY: &[Chip] = &[
         has_usb_jtag_serial: true,
         has_usb_otg: false,
         stub_blob_name: "esp32c6",
+        stub_blob_selector: None,
+        efuse_block1_addr: 0x600B0844,
     },
     // ESP32-H2 — inherits C6 layout but slightly different LP_WDT regs.
     Chip {
@@ -304,6 +350,8 @@ pub const REGISTRY: &[Chip] = &[
         has_usb_jtag_serial: true,
         has_usb_otg: false,
         stub_blob_name: "esp32h2",
+        stub_blob_selector: None,
+        efuse_block1_addr: 0x600B0844,
     },
     // ESP32-C5 — chip_id 23, new EFUSE base.
     Chip {
@@ -328,6 +376,8 @@ pub const REGISTRY: &[Chip] = &[
         has_usb_jtag_serial: true,
         has_usb_otg: false,
         stub_blob_name: "esp32c5",
+        stub_blob_selector: None,
+        efuse_block1_addr: 0x600B4844,
     },
     // ESP32-P4 — chip_id 18; new SPIMEM1 base in MMIO 0x5008D000.
     Chip {
@@ -352,6 +402,8 @@ pub const REGISTRY: &[Chip] = &[
         has_usb_jtag_serial: true,
         has_usb_otg: true,
         stub_blob_name: "esp32p4",
+        stub_blob_selector: Some(esp32p4_stub_selector),
+        efuse_block1_addr: 0x5012D044,
     },
 ];
 

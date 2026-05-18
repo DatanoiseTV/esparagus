@@ -14,9 +14,15 @@ Operations confirmed on real hardware:
 | ESP32-C5   | -      | -        | -        | -     | -                 | -                  | -          | -     |
 | ESP32-C6   | -      | -        | -        | -     | -                 | -                  | -          | -     |
 | ESP32-H2   | -      | -        | -        | -     | -                 | -                  | -          | -     |
-| ESP32-P4   | -      | -        | -        | -     | -                 | -                  | -          | -     |
+| ESP32-P4   | OK     | OK       | OK       | -     | -                 | -                  | -          | OK    |
 
 Legend: `-` not bench-tested yet · `OK` confirmed working · `FAIL` known issue (see below)
+
+ESP32-P4 was bench-verified on an early-rev (silicon revision < 3.00) board
+connected via a CH343 USB-UART bridge.  Detect read chip_id=18 via
+GET_SECURITY_INFO, then chose the `esp32p4-rev1` stub variant via
+EFUSE_BLOCK1 revision reading, completed the OHAI handshake, and reported
+flash JEDEC id 0xC8 0x4018 (GigaDevice GD25Q128, 16 MB) and the base MAC.
 
 ## Known unimplemented features
 

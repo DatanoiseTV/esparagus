@@ -132,6 +132,11 @@ fn run_inner(
     let vid_pid = transport
         .usb_vid()
         .zip(transport.usb_pid());
+    emitter.info(Event::TransportInfo {
+        port: port.to_string(),
+        usb_vid: transport.usb_vid().map(|v| format!("{:#06x}", v)),
+        usb_pid: transport.usb_pid().map(|v| format!("{:#06x}", v)),
+    });
     let mut conn = Connection::new(Box::new(transport));
     conn.set_trace(cli.trace);
 
@@ -231,13 +236,19 @@ fn run_inner(
     // --- Optionally upload + run the stub ---
     if !cli.no_stub && should_use_stub(&cli.command) {
         let stub_guard = report.start_stage("stub_upload");
+        let blob_name = match chip.stub_blob_selector {
+            Some(selector) => selector(chip, &mut conn)?,
+            None => chip.stub_blob_name,
+        };
         emitter.info(Event::StubUploadStart {
             chip: chip.name.into(),
+            blob: blob_name.into(),
         });
         match stub::run(&mut conn, chip) {
             Ok(blob) => {
                 emitter.info(Event::StubRunning {
                     chip: chip.name.into(),
+                    blob: blob_name.into(),
                     entry: format!("{:#010x}", blob.entry),
                 });
                 report.finish_stage(stub_guard, true, None);
@@ -255,7 +266,7 @@ fn run_inner(
             let mac = ops::read_mac(&mut conn, chip)?;
             let id = ops::flash_id(&mut conn, chip)?;
             let mfr = (id & 0xFF) as u8;
-            let dev = (id >> 8) & 0xFFFF;
+            let dev = ops::flash_dev_id(id);
             let size_mb = ops::flash_size_mb_from_id(id);
             emitter.info(Event::FlashIdRead {
                 manufacturer: format!("{:#04x}", mfr),
@@ -275,7 +286,7 @@ fn run_inner(
         Command::FlashId => {
             let id = ops::flash_id(&mut conn, chip)?;
             let mfr = (id & 0xFF) as u8;
-            let dev = (id >> 8) & 0xFFFF;
+            let dev = ops::flash_dev_id(id);
             emitter.info(Event::FlashIdRead {
                 manufacturer: format!("{:#04x}", mfr),
                 device: format!("{:#06x}", dev),

@@ -169,18 +169,39 @@ impl Transport for SerialTransport {
 }
 
 /// Find the USB VID/PID for an OS port path by walking `serialport::available_ports`.
+///
+/// macOS exposes the same physical device as both `/dev/tty.*` (blocking) and
+/// `/dev/cu.*` (call-up); `serialport::available_ports()` may report either.
+/// We accept any of: exact match, the original path, the cu/tty-swapped form,
+/// and as a last resort, basename match — so that callers opening
+/// `/dev/tty.usbmodemXYZ` still pick up VID/PID from `/dev/cu.usbmodemXYZ`.
 fn probe_vid_pid(path: &str) -> Option<(u16, u16)> {
     let ports = serialport::available_ports().ok()?;
-    // On macOS, `/dev/cu.foo` is the equivalent outgoing device of `/dev/tty.foo`.
     let canonical = std::fs::canonicalize(path)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.to_string());
-    let needle = canonical.replace("/dev/tty.", "/dev/cu.");
+    let cu_form = canonical.replace("/dev/tty.", "/dev/cu.");
+    let tty_form = canonical.replace("/dev/cu.", "/dev/tty.");
+    let basename = canonical
+        .rsplit('/')
+        .next()
+        .unwrap_or(&canonical)
+        .trim_start_matches("cu.")
+        .trim_start_matches("tty.")
+        .to_string();
     for p in ports {
-        if p.port_name == canonical
+        let matches = p.port_name == canonical
             || p.port_name == path
-            || p.port_name == needle
-        {
+            || p.port_name == cu_form
+            || p.port_name == tty_form
+            || p.port_name
+                .rsplit('/')
+                .next()
+                .unwrap_or("")
+                .trim_start_matches("cu.")
+                .trim_start_matches("tty.")
+                == basename;
+        if matches {
             if let serialport::SerialPortType::UsbPort(info) = p.port_type {
                 return Some((info.vid, info.pid));
             }

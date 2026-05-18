@@ -49,7 +49,9 @@ struct StubJson {
     bss_start: u32,
 }
 
-/// All bundled stubs, embedded at compile time. The keys match `Chip::stub_blob_name`.
+/// All bundled stubs, embedded at compile time. The keys match either
+/// `Chip::stub_blob_name` or, for chips with revision-specific variants,
+/// the values returned by `Chip::stub_blob_selector`.
 mod blobs {
     pub const ESP32: &str = include_str!("../stubs/esp32.json");
     pub const ESP32S2: &str = include_str!("../stubs/esp32s2.json");
@@ -60,6 +62,7 @@ mod blobs {
     pub const ESP32C6: &str = include_str!("../stubs/esp32c6.json");
     pub const ESP32H2: &str = include_str!("../stubs/esp32h2.json");
     pub const ESP32P4: &str = include_str!("../stubs/esp32p4.json");
+    pub const ESP32P4_REV1: &str = include_str!("../stubs/esp32p4-rev1.json");
 }
 
 fn raw_blob(name: &str) -> Result<&'static str> {
@@ -73,6 +76,7 @@ fn raw_blob(name: &str) -> Result<&'static str> {
         "esp32c6" => blobs::ESP32C6,
         "esp32h2" => blobs::ESP32H2,
         "esp32p4" => blobs::ESP32P4,
+        "esp32p4-rev1" => blobs::ESP32P4_REV1,
         other => {
             // Leak isn't ideal, but blob names are static strings from the
             // chip registry; nothing dynamic lands here at runtime.
@@ -82,8 +86,11 @@ fn raw_blob(name: &str) -> Result<&'static str> {
 }
 
 /// Decode the JSON blob for a given chip into raw text/data segments.
-pub fn load_blob(chip: &Chip) -> Result<StubBlob> {
-    let raw = raw_blob(chip.stub_blob_name)?;
+/// `blob_name` is the resolved variant (e.g. "esp32p4-rev1" for early-rev P4
+/// silicon); use `Chip::stub_blob_name` if you don't need revision-aware
+/// selection.
+pub fn load_blob(chip: &Chip, blob_name: &str) -> Result<StubBlob> {
+    let raw = raw_blob(blob_name)?;
     let j: StubJson = serde_json::from_str(raw)
         .map_err(|e| Error::StubUpload(format!("bad stub JSON for {}: {e}", chip.name)))?;
     let engine = base64::engine::general_purpose::STANDARD;
@@ -194,15 +201,21 @@ pub fn check_no_overlap(blob: &StubBlob, load_addr: u32, size: u32) -> Result<()
 /// Idempotent: if the sync detected that a stub is already running, we skip
 /// the upload entirely.
 pub fn run(conn: &mut Connection, chip: &Chip) -> Result<StubBlob> {
-    let blob = load_blob(chip)?;
+    // Pick the right blob: revision-specific via the chip's selector hook
+    // (P4) or just the default name for everyone else.
+    let blob_name = match chip.stub_blob_selector {
+        Some(selector) => selector(chip, conn)?,
+        None => chip.stub_blob_name,
+    };
+    let blob = load_blob(chip, blob_name)?;
 
     if conn.stub_running {
-        info!(chip = chip.name, "stub already running, skipping upload");
+        info!(chip = chip.name, blob = blob_name, "stub already running, skipping upload");
         conn.stub_uploaded = true;
         return Ok(blob);
     }
 
-    info!(chip = chip.name, "uploading stub flasher");
+    info!(chip = chip.name, blob = blob_name, "uploading stub flasher");
     upload_segment(conn, &blob.text, blob.text_start)?;
     if !blob.data.is_empty() {
         upload_segment(conn, &blob.data, blob.data_start)?;

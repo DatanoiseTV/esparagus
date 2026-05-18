@@ -28,6 +28,11 @@ pub enum Event {
         port: String,
         baud: u32,
     },
+    TransportInfo {
+        port: String,
+        usb_vid: Option<String>,
+        usb_pid: Option<String>,
+    },
     ConnectAttempt {
         strategy: String,
         attempt: u32,
@@ -42,9 +47,11 @@ pub enum Event {
     },
     StubUploadStart {
         chip: String,
+        blob: String,
     },
     StubRunning {
         chip: String,
+        blob: String,
         entry: String,
     },
     FlashIdRead {
@@ -196,6 +203,13 @@ fn human(e: &LoggedEvent) -> String {
         Event::RunStart { tool, port, baud, .. } => {
             format!("[{}] {} starting on {} @ {}", e.ts, tool, port, baud)
         }
+        Event::TransportInfo { port, usb_vid, usb_pid } => format!(
+            "[{}] transport {} vid={} pid={}",
+            e.ts,
+            port,
+            usb_vid.clone().unwrap_or_else(|| "?".into()),
+            usb_pid.clone().unwrap_or_else(|| "?".into())
+        ),
         Event::ConnectAttempt { strategy, attempt } => {
             format!("[{}] connect {} (attempt {})", e.ts, strategy, attempt)
         }
@@ -205,10 +219,13 @@ fn human(e: &LoggedEvent) -> String {
         Event::ChipDetected { chip, chip_id } => {
             format!("[{}] detected {} (chip_id={})", e.ts, chip, chip_id)
         }
-        Event::StubUploadStart { chip } => format!("[{}] uploading stub for {}", e.ts, chip),
-        Event::StubRunning { chip, entry } => {
-            format!("[{}] stub running on {} (entry {})", e.ts, chip, entry)
+        Event::StubUploadStart { chip, blob } => {
+            format!("[{}] uploading stub {} for {}", e.ts, blob, chip)
         }
+        Event::StubRunning { chip, blob, entry } => format!(
+            "[{}] stub {} running on {} (entry {})",
+            e.ts, blob, chip, entry
+        ),
         Event::FlashIdRead { manufacturer, device, size_mb } => format!(
             "[{}] flash id: mfr={} dev={} size={}MB",
             e.ts,

@@ -211,21 +211,29 @@ pub fn flash_id(conn: &mut Connection, chip: &Chip) -> Result<u32> {
     run_spiflash_command(conn, chip, 0x9F, &[], 24, None, 0, 0)
 }
 
-/// Decode flash size from the second device-ID byte of RDID, matching the
-/// heuristic upstream esptool uses (`flash_size_str_from_id`).
+/// Decode flash size in megabytes from the JEDEC capacity byte of RDID.
+///
+/// Convention used by Winbond / GigaDevice / Macronix / ISSI / XMC: the
+/// capacity byte (the third byte returned by 0x9F, i.e. bits 16..24 of the
+/// little-endian u32 read out of W0) encodes `log2(size_in_bytes)`:
+///   0x14 → 1 MB, 0x15 → 2 MB, 0x16 → 4 MB, 0x17 → 8 MB,
+///   0x18 → 16 MB, 0x19 → 32 MB, 0x1A → 64 MB, 0x1B → 128 MB.
 pub fn flash_size_mb_from_id(flash_id: u32) -> Option<u32> {
-    let size_byte = ((flash_id >> 16) & 0xFF) as u8;
-    match size_byte {
-        0x12 => Some(1),  //  8 Mbit
-        0x13 => Some(2),  // 16 Mbit
-        0x14 => Some(4),  // 32 Mbit
-        0x15 => Some(8),  // 64 Mbit
-        0x16 => Some(16), // 128 Mbit
-        0x17 => Some(32), // 256 Mbit
-        0x18 => Some(64), // 512 Mbit
-        0x19 => Some(128),
-        _ => None,
+    let cap = ((flash_id >> 16) & 0xFF) as u8;
+    if (0x14..=0x1B).contains(&cap) {
+        Some(1u32 << (cap - 0x14))
+    } else {
+        None
     }
+}
+
+/// Extract the 16-bit JEDEC device ID from the raw u32 read out of W0.
+/// SPI peripheral packs bytes little-endian: byte0=mfr, byte1=type, byte2=cap.
+/// JEDEC convention prints dev_id as (type << 8) | capacity.
+pub fn flash_dev_id(flash_id: u32) -> u16 {
+    let dev_type = ((flash_id >> 8) & 0xFF) as u16;
+    let cap = ((flash_id >> 16) & 0xFF) as u16;
+    (dev_type << 8) | cap
 }
 
 /// Attach to the SPI flash (configures pins). Matches `ESPLoader.flash_spi_attach`.
