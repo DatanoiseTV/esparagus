@@ -230,6 +230,9 @@ pub fn parse(bytes: &[u8]) -> Result<NvsPartition> {
     struct RawEntry {
         ns_index: u8,
         ty: NvsType,
+        /// Chunk index for blob_data entries (so the coalescer can sort
+        /// chunks before concatenating). 0xFF for non-chunk types.
+        chunk_index: u8,
         key: String,
         value: NvsValue,
     }
@@ -271,6 +274,7 @@ pub fn parse(bytes: &[u8]) -> Result<NvsPartition> {
             }
             let ty = NvsType::from_byte(entry[1]);
             let span = entry[2] as usize;
+            let chunk_index = entry[3];
             let key = read_key(&entry[8..24]);
 
             if ty.is_variable_length() {
@@ -308,6 +312,7 @@ pub fn parse(bytes: &[u8]) -> Result<NvsPartition> {
                 raws.push(RawEntry {
                     ns_index,
                     ty,
+                    chunk_index,
                     key,
                     value,
                 });
@@ -330,6 +335,7 @@ pub fn parse(bytes: &[u8]) -> Result<NvsPartition> {
                 raws.push(RawEntry {
                     ns_index,
                     ty,
+                    chunk_index,
                     key,
                     value,
                 });
@@ -338,7 +344,67 @@ pub fn parse(bytes: &[u8]) -> Result<NvsPartition> {
         }
     }
 
-    // Second pass: resolve namespace indices to names. Items in the special
+    // Second pass: coalesce multi-chunk blobs. An NVS v2 blob is stored
+    // as (a) one `blob_idx` entry whose value is a header describing the
+    // total size and number of chunks, plus (b) one or more `blob_data`
+    // entries with matching (ns_index, key) and distinct `chunk_index`.
+    //
+    // The user wants to see one logical blob per (ns_index, key), not
+    // the index entry alongside its data chunks. Merge them here: drop
+    // the blob_idx entries, gather the blob_data chunks sorted by
+    // chunk_index, concatenate, and emit a single legacy-style Blob.
+    use std::collections::BTreeMap;
+    type BlobKey = (u8, String);
+    type BlobChunks = Vec<(u8, Vec<u8>)>;
+    let mut blob_indexed: std::collections::HashSet<BlobKey> = std::collections::HashSet::new();
+    let mut blob_chunks: BTreeMap<BlobKey, BlobChunks> = BTreeMap::new();
+    for r in &raws {
+        match r.ty {
+            NvsType::BlobIdx => {
+                blob_indexed.insert((r.ns_index, r.key.clone()));
+            }
+            NvsType::BlobData => {
+                if let NvsValue::Blob { bytes } = &r.value {
+                    blob_chunks
+                        .entry((r.ns_index, r.key.clone()))
+                        .or_default()
+                        .push((r.chunk_index, bytes.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut coalesced: Vec<RawEntry> = Vec::new();
+    for ((ns, key), mut parts) in blob_chunks {
+        if !blob_indexed.contains(&(ns, key.clone())) {
+            // Orphaned chunks (no matching index). Probably mid-rotation
+            // garbage — drop them rather than show stale data.
+            continue;
+        }
+        parts.sort_by_key(|(c, _)| *c);
+        let mut data = Vec::with_capacity(parts.iter().map(|(_, b)| b.len()).sum());
+        for (_, b) in parts {
+            data.extend(b);
+        }
+        coalesced.push(RawEntry {
+            ns_index: ns,
+            ty: NvsType::Blob,
+            chunk_index: 0xFF,
+            key,
+            value: NvsValue::Blob { bytes: data },
+        });
+    }
+    // Drop the entries we just folded into coalesced blobs.
+    let raws: Vec<RawEntry> = raws
+        .into_iter()
+        .filter(|r| {
+            let owns = blob_indexed.contains(&(r.ns_index, r.key.clone()));
+            !owns || !matches!(r.ty, NvsType::BlobIdx | NvsType::BlobData)
+        })
+        .chain(coalesced)
+        .collect();
+
+    // Third pass: resolve namespace indices to names. Items in the special
     // namespace 0 are the registry itself — key=name, value=index.
     let mut ns_name: HashMap<u8, String> = HashMap::new();
     ns_name.insert(0, "<registry>".into());
@@ -499,5 +565,99 @@ mod tests {
     fn rejects_misaligned_partition() {
         let buf = vec![0xFFu8; PAGE_SIZE + 100];
         assert!(parse(&buf).is_err());
+    }
+
+    /// A two-chunk blob in NVS v2: one blob_idx + two blob_data entries
+    /// with chunk_index 0 and 1. Parser should coalesce them into one
+    /// row whose value is the concatenated bytes of both chunks.
+    #[test]
+    fn coalesces_blob_idx_and_data_chunks() {
+        let mut page = vec![0xFFu8; PAGE_SIZE];
+        page[8] = PAGE_VERSION_V2;
+        // 5 entries WRITTEN: registry, blob_idx, blob_data#0, blob_data#1
+        // (each blob_data uses span=2 so it consumes itself + 1 follow-on
+        // entry for its bytes). We'll write entries 0..6:
+        //   0  registry (storage → ns 1)
+        //   1  blob_idx (ns=1, key="cfg", chunk_count=2, size=8)
+        //   2  blob_data (ns=1, key="cfg", chunk_index=0, span=2, size=4)
+        //   3      data for chunk 0 (4 bytes used, padded)
+        //   4  blob_data (ns=1, key="cfg", chunk_index=1, span=2, size=4)
+        //   5      data for chunk 1
+        // Entry-state bitmap: 6 WRITTEN entries; rest empty.
+        // Bits for slots 0..3 = WRITTEN (0b10) packed as 0b10_10_10_10 = 0xAA
+        // Bits for slots 4..5 = WRITTEN (0b10), 6..7 = EMPTY (0b11) → 0xFA
+        let bm = PAGE_HEADER_SIZE;
+        page[bm] = 0b10_10_10_10;
+        page[bm + 1] = 0b11_11_10_10;
+
+        let entries_off = PAGE_HEADER_SIZE + PAGE_BITMAP_SIZE;
+        let entry = |i: usize| entries_off + i * ENTRY_SIZE;
+
+        // Entry 0 — namespace registry mapping "storage" → 1.
+        page[entry(0)] = 0;
+        page[entry(0) + 1] = 0x01;
+        page[entry(0) + 2] = 1;
+        page[entry(0) + 3] = 0xFF;
+        for b in &mut page[entry(0) + 8..entry(0) + 24] {
+            *b = 0;
+        }
+        page[entry(0) + 8..entry(0) + 15].copy_from_slice(b"storage");
+        page[entry(0) + 24] = 1;
+
+        // Entry 1 — blob_idx. ns=1, type=0x48, span=1, chunk_index=0xFF.
+        page[entry(1)] = 1;
+        page[entry(1) + 1] = 0x48;
+        page[entry(1) + 2] = 1;
+        page[entry(1) + 3] = 0xFF;
+        for b in &mut page[entry(1) + 8..entry(1) + 24] {
+            *b = 0;
+        }
+        page[entry(1) + 8..entry(1) + 11].copy_from_slice(b"cfg");
+        // The 8 metadata bytes (dataSize u32, chunk_count u8, chunk_start u8, reserved u16).
+        // We don't read them yet — parser uses `size` from bytes 24..26
+        // for the (currently unused) NvsValue::Blob it produces.
+
+        // Entry 2 — blob_data chunk 0. ns=1, type=0x42, span=2,
+        // chunk_index=0, size=4 (4 data bytes in entry 3).
+        page[entry(2)] = 1;
+        page[entry(2) + 1] = 0x42;
+        page[entry(2) + 2] = 2;
+        page[entry(2) + 3] = 0; // chunk_index 0
+        for b in &mut page[entry(2) + 8..entry(2) + 24] {
+            *b = 0;
+        }
+        page[entry(2) + 8..entry(2) + 11].copy_from_slice(b"cfg");
+        LittleEndian::write_u16(&mut page[entry(2) + 24..entry(2) + 26], 4);
+        // Entry 3 — chunk 0 data: 0xDE 0xAD 0xBE 0xEF
+        page[entry(3)..entry(3) + 4].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        // Entry 4 — blob_data chunk 1, same key, chunk_index=1.
+        page[entry(4)] = 1;
+        page[entry(4) + 1] = 0x42;
+        page[entry(4) + 2] = 2;
+        page[entry(4) + 3] = 1; // chunk_index 1
+        for b in &mut page[entry(4) + 8..entry(4) + 24] {
+            *b = 0;
+        }
+        page[entry(4) + 8..entry(4) + 11].copy_from_slice(b"cfg");
+        LittleEndian::write_u16(&mut page[entry(4) + 24..entry(4) + 26], 4);
+        page[entry(5)..entry(5) + 4].copy_from_slice(&[0xCA, 0xFE, 0xBA, 0xBE]);
+
+        let parsed = parse(&page).unwrap();
+        // After coalescing: exactly one user-visible entry for `cfg`.
+        assert_eq!(parsed.items.len(), 1, "expected one coalesced blob entry");
+        let it = &parsed.items[0];
+        assert_eq!(it.namespace, "storage");
+        assert_eq!(it.key, "cfg");
+        match &it.value {
+            NvsValue::Blob { bytes } => {
+                assert_eq!(
+                    bytes,
+                    &vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE],
+                    "chunks should be concatenated in chunk_index order"
+                );
+            }
+            other => panic!("expected Blob, got {:?}", other),
+        }
     }
 }
