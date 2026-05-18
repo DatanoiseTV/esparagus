@@ -1,0 +1,30 @@
+esparagus
+=========
+
+This program is a Rust port of the protocol, sync, reset and chip-detection
+logic from esptool (https://github.com/espressif/esptool), with new code
+providing structured observability (NDJSON event stream, file logging, final
+report, diagnostic hint engine) intended for CI/CD pipelines and LLM-driven
+feedback loops.
+
+Because esparagus contains a derived translation of esptool's protocol
+implementation, the whole work is distributed under GPL-2.0-or-later to match
+upstream esptool.
+
+  esptool
+    Copyright (C) 2014-2025 Fredrik Ahlberg, Angus Gratton,
+                            Espressif Systems (Shanghai) CO LTD,
+                            and other contributors.
+    Licensed under GPL-2.0-or-later.
+    https://github.com/espressif/esptool
+
+The flasher stub binaries shipped in `stubs/` come from esp-flasher-stub v0.7.0
+(https://github.com/espressif/esp-flasher-stub) and are dual licensed under the
+Apache License Version 2.0 OR the MIT license. The files `stubs/LICENSE-APACHE`
+and `stubs/LICENSE-MIT` apply to those binaries only; they do not change the
+license of the rest of this project.
+
+  esp-flasher-stub
+    Copyright (C) Espressif Systems (Shanghai) CO LTD.
+    Dual licensed: Apache-2.0 OR MIT.
+    https://github.com/espressif/esp-flasher-stub
