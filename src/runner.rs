@@ -18,11 +18,16 @@ use crate::chip::Chip;
 use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
 use crate::observe::{Emitter, Event, Report, ReportBuilder, ReportTransport};
+use crate::partition::{PartitionEntry, PartitionTable, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SECTOR};
 use crate::protocol::Connection;
 use crate::reset::{strategy_sequence, AfterMode, ResetMode};
 use crate::transport::serial::SerialTransport;
 use crate::transport::Transport;
 use crate::{chip, image, ops, reset, stub};
+
+/// ROM bootloader's auto-baud target — every flow opens at this rate, syncs,
+/// and only then upgrades to the user-requested baud.
+const SYNC_BAUD: u32 = 115_200;
 
 pub struct Runtime {
     pub emitter: Emitter,
@@ -103,6 +108,12 @@ fn current_stage_name(cli: &Cli) -> String {
         Command::WriteFlash { .. } => "write_flash",
         Command::ReadFlash { .. } => "read_flash",
         Command::Reset => "reset",
+        Command::Partitions { .. } => "partitions",
+        Command::WritePartition { .. } => "write_partition",
+        Command::ReadPartition { .. } => "read_partition",
+        Command::ErasePartition { .. } => "erase_partition",
+        Command::Backup { .. } => "backup",
+        Command::Restore { .. } => "restore",
     }
     .into()
 }
@@ -127,8 +138,9 @@ fn run_inner(
     emitter: &Emitter,
     report: &mut ReportBuilder,
 ) -> Result<()> {
-    // --- Open port ---
-    let transport = SerialTransport::open(port, baud)?;
+    // --- Open port at the ROM safe rate; we'll upgrade after sync ---
+    let initial_baud = SYNC_BAUD.min(baud);
+    let transport = SerialTransport::open(port, initial_baud)?;
     let vid_pid = transport
         .usb_vid()
         .zip(transport.usb_pid());
@@ -234,6 +246,7 @@ fn run_inner(
     }
 
     // --- Optionally upload + run the stub ---
+    let mut current_baud = initial_baud;
     if !cli.no_stub && should_use_stub(&cli.command) {
         let stub_guard = report.start_stage("stub_upload");
         let blob_name = match chip.stub_blob_selector {
@@ -259,6 +272,24 @@ fn run_inner(
             }
         }
     }
+
+    // --- Upgrade baud rate now that we're past sync / stub upload ---
+    if baud > current_baud {
+        // change_baud's `second_arg` is the previous baud when talking to the
+        // stub (so it can reset the UART divider correctly); the ROM expects 0.
+        let second_arg = if conn.stub_running { current_baud } else { 0 };
+        conn.change_baud(baud, second_arg)?;
+        conn.transport.set_baud(baud)?;
+        // Allow the chip's UART to finish reconfiguring.
+        std::thread::sleep(Duration::from_millis(50));
+        conn.flush_input()?;
+        emitter.info(Event::BaudUpgrade {
+            from: current_baud,
+            to: baud,
+        });
+        current_baud = baud;
+    }
+    let _ = current_baud;
 
     // --- Run the operation ---
     match &cli.command {
@@ -373,6 +404,176 @@ fn run_inner(
         Command::Reset => {
             // Handled by the after-mode below.
         }
+
+        Command::Partitions { table } => {
+            let pt = load_partition_table(&mut conn, table.as_deref(), emitter)?;
+            // Emit per-partition resolved events so an LLM or CI script can
+            // round-trip the table without re-parsing.
+            for p in &pt.entries {
+                emitter.info(Event::PartitionResolved {
+                    name: p.name.clone(),
+                    ptype: p.type_name().into(),
+                    subtype: p.subtype_name(),
+                    offset: format!("{:#010x}", p.offset),
+                    size: p.size as u64,
+                });
+            }
+        }
+
+        Command::WritePartition {
+            name,
+            table,
+            file,
+        } => {
+            let pt = load_partition_table(&mut conn, table.as_deref(), emitter)?;
+            let entry = pt.find(name).ok_or_else(|| {
+                Error::Other(format!("no partition named {:?} in table", name))
+            })?;
+            emit_resolved(emitter, entry);
+            let (bytes, _hdr) = image::load_payload(file)?;
+            if bytes.len() as u32 > entry.size {
+                return Err(Error::Other(format!(
+                    "image is {} bytes, partition {:?} is only {} bytes",
+                    bytes.len(),
+                    name,
+                    entry.size
+                )));
+            }
+            ops::flash_spi_attach(&mut conn, 0)?;
+            write_payload(emitter, report, &mut conn, chip, entry.offset, &bytes, cli.json)?;
+        }
+
+        Command::ReadPartition {
+            name,
+            table,
+            output,
+        } => {
+            let pt = load_partition_table(&mut conn, table.as_deref(), emitter)?;
+            let entry = pt.find(name).ok_or_else(|| {
+                Error::Other(format!("no partition named {:?} in table", name))
+            })?;
+            emit_resolved(emitter, entry);
+            let g = report.start_stage(format!("read_partition {}", entry.name));
+            emitter.info(Event::ReadBegin {
+                addr: format!("{:#010x}", entry.offset),
+                size: entry.size as u64,
+            });
+            let bar = make_bar(entry.size as u64, cli.json);
+            let data = {
+                let mut progress = |w: u64, _t: u64| {
+                    if let Some(b) = bar.as_ref() {
+                        b.set_position(w);
+                    }
+                };
+                ops::read_flash(&mut conn, entry.offset, entry.size, Some(&mut progress))?
+            };
+            if let Some(b) = bar.as_ref() {
+                b.finish_and_clear();
+            }
+            std::fs::write(output, &data)?;
+            let md5 = md5_hex(&data);
+            emitter.info(Event::ReadDone {
+                addr: format!("{:#010x}", entry.offset),
+                size: data.len() as u64,
+                md5: md5.clone(),
+            });
+            let mut stage = report.finish_stage(g, true, None);
+            stage.bytes = Some(data.len() as u64);
+            stage.md5 = Some(md5);
+            *report.stages.last_mut().unwrap() = stage;
+        }
+
+        Command::ErasePartition { name, table } => {
+            let pt = load_partition_table(&mut conn, table.as_deref(), emitter)?;
+            let entry = pt.find(name).ok_or_else(|| {
+                Error::Other(format!("no partition named {:?} in table", name))
+            })?;
+            emit_resolved(emitter, entry);
+            let g = report.start_stage(format!("erase_partition {}", entry.name));
+            emitter.info(Event::EraseBegin {
+                addr: format!("{:#010x}", entry.offset),
+                size: entry.size as u64,
+            });
+            let start = Instant::now();
+            ops::erase_region(&mut conn, entry.offset, entry.size)?;
+            emitter.info(Event::EraseDone {
+                addr: format!("{:#010x}", entry.offset),
+                size: entry.size as u64,
+                ms: start.elapsed().as_millis(),
+            });
+            report.finish_stage(g, true, None);
+        }
+
+        Command::Backup { output, size } => {
+            let resolved_size = match size {
+                Some(s) => *s,
+                None => {
+                    let id = ops::flash_id(&mut conn, chip)?;
+                    let mb = ops::flash_size_mb_from_id(id).ok_or_else(|| {
+                        Error::Other(
+                            "could not auto-detect flash size; pass --size explicitly".into(),
+                        )
+                    })?;
+                    mb * 1024 * 1024
+                }
+            };
+            ops::flash_spi_attach(&mut conn, 0)?;
+            let g = report.start_stage("backup");
+            emitter.info(Event::BackupBegin {
+                size: resolved_size as u64,
+            });
+            let bar = make_bar(resolved_size as u64, cli.json);
+            let data = {
+                let mut progress = |w: u64, _t: u64| {
+                    if let Some(b) = bar.as_ref() {
+                        b.set_position(w);
+                    }
+                };
+                ops::read_flash(&mut conn, 0, resolved_size, Some(&mut progress))?
+            };
+            if let Some(b) = bar.as_ref() {
+                b.finish_and_clear();
+            }
+            std::fs::write(output, &data)?;
+            let md5 = md5_hex(&data);
+            emitter.info(Event::BackupDone {
+                size: data.len() as u64,
+                md5: md5.clone(),
+            });
+            let mut stage = report.finish_stage(g, true, None);
+            stage.bytes = Some(data.len() as u64);
+            stage.md5 = Some(md5);
+            *report.stages.last_mut().unwrap() = stage;
+        }
+
+        Command::Restore { input } => {
+            let bytes = std::fs::read(input)?;
+            ops::flash_spi_attach(&mut conn, 0)?;
+            let g = report.start_stage("restore");
+            emitter.info(Event::RestoreBegin {
+                size: bytes.len() as u64,
+            });
+            let bar = make_bar(bytes.len() as u64, cli.json);
+            let md5 = {
+                let mut progress = |w: u64, _t: u64| {
+                    if let Some(b) = bar.as_ref() {
+                        b.set_position(w);
+                    }
+                };
+                ops::write_flash(&mut conn, chip, 0, &bytes, Some(&mut progress))?
+            };
+            if let Some(b) = bar.as_ref() {
+                b.finish_and_clear();
+            }
+            emitter.info(Event::RestoreDone {
+                size: bytes.len() as u64,
+                md5: md5.clone(),
+            });
+            let mut stage = report.finish_stage(g, true, None);
+            stage.bytes = Some(bytes.len() as u64);
+            stage.md5 = Some(md5);
+            *report.stages.last_mut().unwrap() = stage;
+        }
     }
 
     // --- After-mode: hard reset if requested ---
@@ -405,7 +606,121 @@ fn should_use_stub(cmd: &Command) -> bool {
             | Command::Detect
             | Command::ReadMac
             | Command::FlashId
+            | Command::Partitions { .. }
+            | Command::WritePartition { .. }
+            | Command::ReadPartition { .. }
+            | Command::ErasePartition { .. }
+            | Command::Backup { .. }
+            | Command::Restore { .. }
     )
+}
+
+fn load_partition_table(
+    conn: &mut Connection,
+    csv_path: Option<&Path>,
+    emitter: &Emitter,
+) -> Result<PartitionTable> {
+    match csv_path {
+        Some(p) => {
+            let table = PartitionTable::load_csv(p)?;
+            table.validate()?;
+            emitter.info(Event::PartitionTableLoaded {
+                source: format!("csv:{}", p.display()),
+                count: table.entries.len(),
+            });
+            Ok(table)
+        }
+        None => {
+            // Read PARTITION_TABLE_SECTOR (4 KB) from flash at 0x8000.
+            let raw = ops::read_flash(
+                conn,
+                PARTITION_TABLE_OFFSET,
+                PARTITION_TABLE_SECTOR,
+                None,
+            )?;
+            let table = PartitionTable::from_binary(&raw)?;
+            table.validate()?;
+            emitter.info(Event::PartitionTableLoaded {
+                source: format!(
+                    "flash:{:#x}+{:#x}",
+                    PARTITION_TABLE_OFFSET, PARTITION_TABLE_SECTOR
+                ),
+                count: table.entries.len(),
+            });
+            Ok(table)
+        }
+    }
+}
+
+fn emit_resolved(emitter: &Emitter, entry: &PartitionEntry) {
+    emitter.info(Event::PartitionResolved {
+        name: entry.name.clone(),
+        ptype: entry.type_name().into(),
+        subtype: entry.subtype_name(),
+        offset: format!("{:#010x}", entry.offset),
+        size: entry.size as u64,
+    });
+}
+
+fn md5_hex(data: &[u8]) -> String {
+    use md5::{Digest, Md5};
+    let mut h = Md5::new();
+    h.update(data);
+    format!("{:x}", h.finalize())
+}
+
+fn write_payload(
+    emitter: &Emitter,
+    report: &mut ReportBuilder,
+    conn: &mut Connection,
+    chip: &chip::Chip,
+    addr: u32,
+    bytes: &[u8],
+    json_mode: bool,
+) -> Result<()> {
+    let stage_name = format!("write_flash {:#010x}", addr);
+    let g = report.start_stage(&stage_name);
+    let addr_str = format!("{:#010x}", addr);
+    emitter.info(Event::WriteBegin {
+        addr: addr_str.clone(),
+        size: bytes.len() as u64,
+        compressed: true,
+    });
+    let bar = make_bar(bytes.len() as u64, json_mode);
+    let md5 = {
+        let mut last_pct = 0u32;
+        let emit_for_progress = emitter.clone();
+        let addr_for_progress = addr_str.clone();
+        let mut progress = |written: u64, total: u64| {
+            if let Some(b) = bar.as_ref() {
+                b.set_position(written);
+            }
+            let pct = if total == 0 { 100 } else { (written * 100 / total) as u32 };
+            if pct >= last_pct + 5 || pct == 100 {
+                last_pct = pct;
+                emit_for_progress.info(Event::WriteProgress {
+                    addr: addr_for_progress.clone(),
+                    written,
+                    total,
+                    pct: pct as f64,
+                });
+            }
+        };
+        ops::write_flash(conn, chip, addr, bytes, Some(&mut progress))?
+    };
+    if let Some(b) = bar.as_ref() {
+        b.finish_and_clear();
+    }
+    emitter.info(Event::Md5Verified {
+        addr: addr_str,
+        size: bytes.len() as u64,
+        md5: md5.clone(),
+    });
+    let mut stage = report.finish_stage(g, true, None);
+    stage.bytes = Some(bytes.len() as u64);
+    stage.md5 = Some(md5);
+    *report.stages.last_mut().unwrap() = stage;
+    Ok(())
 }
 
 fn make_bar(total: u64, suppress: bool) -> Option<ProgressBar> {

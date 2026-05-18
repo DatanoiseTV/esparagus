@@ -17,9 +17,10 @@ pub struct Cli {
     #[arg(long, short = 'p', global = true, env = "ESPARAGUS_PORT")]
     pub port: Option<String>,
 
-    /// Baud rate after sync. ROM bootloader auto-bauds, but most chips do
-    /// best at 460800; the stub can go to 921600+.
-    #[arg(long, short = 'b', global = true, default_value_t = 115_200)]
+    /// Baud rate after sync. The initial sync always happens at 115200 (the
+    /// ROM bootloader's safe rate); once we've synced (and uploaded the stub
+    /// if applicable), we upgrade to this rate for the rest of the run.
+    #[arg(long, short = 'b', global = true, default_value_t = 460_800)]
     pub baud: u32,
 
     /// Override chip detection. Accepts "esp32", "esp32-s3", "esp32s3", etc.
@@ -107,6 +108,62 @@ pub enum Command {
 
     /// Hard-reset the chip (release EN line).
     Reset,
+
+    /// List the partition table from a CSV file or read from the chip's
+    /// flash at offset 0x8000.
+    Partitions {
+        /// Path to a partitions.csv file. If omitted, read the table from
+        /// the chip at 0x8000.
+        #[arg(long)]
+        table: Option<PathBuf>,
+    },
+
+    /// Write a file to a partition addressed by name. The partition table is
+    /// either supplied via --table or read from the chip's flash.
+    WritePartition {
+        /// Partition name (e.g. "factory", "ota_0", "nvs").
+        #[arg(long)]
+        name: String,
+        /// Path to a partitions.csv. Omit to read table from flash.
+        #[arg(long)]
+        table: Option<PathBuf>,
+        /// File to write.
+        file: PathBuf,
+    },
+
+    /// Read an entire partition to a file.
+    ReadPartition {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        table: Option<PathBuf>,
+        #[arg(long, short = 'o')]
+        output: PathBuf,
+    },
+
+    /// Erase an entire partition.
+    ErasePartition {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        table: Option<PathBuf>,
+    },
+
+    /// Dump the entire flash to a file. Size auto-detected from the SPI
+    /// flash JEDEC capacity byte unless --size is provided.
+    Backup {
+        #[arg(long, short = 'o')]
+        output: PathBuf,
+        /// Override size (bytes; hex prefix accepted). Default: auto-detect.
+        #[arg(long, value_parser = parse_u32)]
+        size: Option<u32>,
+    },
+
+    /// Restore a previously-dumped flash image, starting at 0x0.
+    Restore {
+        /// File to restore. Must be ≤ flash size.
+        input: PathBuf,
+    },
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]

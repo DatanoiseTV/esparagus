@@ -6,6 +6,15 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Partition CSV parser (IDF dialect — same syntax as `partitions.csv`).
+- Binary partition-table parser; reads the table from the chip's flash at
+  offset 0x8000 when no CSV is supplied.
+- `partitions`, `write-partition`, `read-partition`, `erase-partition`
+  subcommands for partition-name-addressed operations.
+- `backup` / `restore` subcommands; backup auto-detects flash size from the
+  SPI flash JEDEC capacity byte.
+- Initial sync at 115200, then `change_baud` to the user-requested rate
+  (default now 460800) after stub upload — same sequence upstream uses.
 - Initial Rust port of esptool's protocol, sync, reset, chip detection, and
   stub loader paths.
 - NDJSON event stream on stdout (`--json`).

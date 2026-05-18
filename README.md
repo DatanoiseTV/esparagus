@@ -60,6 +60,29 @@ Hard-reset the chip after flashing:
 
     esparagus reset --port /dev/cu.usbserial-XYZ
 
+Work with the partition table — either from a CSV or by reading it back
+from the chip's flash at 0x8000:
+
+    # List the table the chip is actually running
+    esparagus partitions --port /dev/cu.usbserial-XYZ
+
+    # Flash a file to a partition addressed by name (no offset math)
+    esparagus write-partition --port /dev/cu.usbserial-XYZ \
+      --name ota_0 firmware.bin
+
+    # Read back the nvs partition
+    esparagus read-partition --port /dev/cu.usbserial-XYZ \
+      --name nvs --output nvs.bin
+
+    # Erase the nvs partition
+    esparagus erase-partition --port /dev/cu.usbserial-XYZ --name nvs
+
+Backup and restore the full flash, with size auto-detected from the SPI
+flash JEDEC capacity byte:
+
+    esparagus backup --port /dev/cu.usbserial-XYZ -o flash-dump.bin
+    esparagus restore --port /dev/cu.usbserial-XYZ flash-dump.bin
+
 ## Why CI/LLM-friendly
 
 Every CLI run emits a stream of structured events:

@@ -99,6 +99,35 @@ pub enum Event {
     ResetIssued {
         kind: String,
     },
+    BaudUpgrade {
+        from: u32,
+        to: u32,
+    },
+    PartitionTableLoaded {
+        source: String,
+        count: usize,
+    },
+    PartitionResolved {
+        name: String,
+        ptype: String,
+        subtype: String,
+        offset: String,
+        size: u64,
+    },
+    BackupBegin {
+        size: u64,
+    },
+    BackupDone {
+        size: u64,
+        md5: String,
+    },
+    RestoreBegin {
+        size: u64,
+    },
+    RestoreDone {
+        size: u64,
+        md5: String,
+    },
     Warning {
         message: String,
     },
@@ -254,6 +283,24 @@ fn human(e: &LoggedEvent) -> String {
             format!("[{}] read {} +{} bytes md5={}", e.ts, addr, size, md5)
         }
         Event::ResetIssued { kind } => format!("[{}] reset issued ({})", e.ts, kind),
+        Event::BaudUpgrade { from, to } => {
+            format!("[{}] baud upgrade {} -> {}", e.ts, from, to)
+        }
+        Event::PartitionTableLoaded { source, count } => {
+            format!("[{}] partition table {} ({} entries)", e.ts, source, count)
+        }
+        Event::PartitionResolved { name, ptype, subtype, offset, size } => format!(
+            "[{}] partition {} type={}/{} @ {} ({} bytes)",
+            e.ts, name, ptype, subtype, offset, size
+        ),
+        Event::BackupBegin { size } => format!("[{}] backup begin ({} bytes)", e.ts, size),
+        Event::BackupDone { size, md5 } => {
+            format!("[{}] backup done {} bytes md5={}", e.ts, size, md5)
+        }
+        Event::RestoreBegin { size } => format!("[{}] restore begin ({} bytes)", e.ts, size),
+        Event::RestoreDone { size, md5 } => {
+            format!("[{}] restore done {} bytes md5={}", e.ts, size, md5)
+        }
         Event::Warning { message } => format!("[{}] WARN: {}", e.ts, message),
         Event::Error { stage, class, detail } => {
             format!("[{}] ERROR {}/{}: {}", e.ts, stage, class, detail)

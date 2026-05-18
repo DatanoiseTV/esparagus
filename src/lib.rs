@@ -9,6 +9,7 @@ pub mod error;
 pub mod image;
 pub mod observe;
 pub mod ops;
+pub mod partition;
 pub mod protocol;
 pub mod reset;
 pub mod runner;
