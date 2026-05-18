@@ -1,4 +1,5 @@
-# esparagus
+<img width="600" height="600" alt="image" src="https://github.com/user-attachments/assets/a12e35af-3f7f-4f61-91c1-a86a253dd0b6" />
+
 
 [![License: GPL-2.0+](https://img.shields.io/badge/License-GPL%202.0%2B-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
