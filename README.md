@@ -257,6 +257,28 @@ for the full mapping.
   diagnostic hint engine
 - `src/cli.rs` + `src/runner.rs` — CLI parsing and orchestration
 
+## For AI agents: Agent Skill
+
+The repo ships an [Agent Skill](https://agentskills.io) at
+`skills/esparagus/`. Drop the directory into your agent's skills
+folder (Claude Code, Cursor, OpenCode, Goose, etc.) and the agent
+gets a structured guide to esparagus's CLI, the NDJSON event stream,
+the GNU-expect-style monitor, exit-code semantics, and the
+crash-detection patterns — everything an agent needs to flash a build
+and decide what to do based on the result, without parsing prose.
+
+```
+skills/esparagus/
+├── SKILL.md                      # name + description + main guide
+├── references/
+│   ├── EVENTS.md                 # full NDJSON event schema
+│   ├── EXIT_CODES.md             # exit codes + diagnostic classes
+│   ├── EXPECT_PATTERNS.md        # --expect / crash detection
+│   └── ESPTOOL_COMPAT.md         # busybox-style esptool symlink mode
+└── assets/
+    └── partitions-example.csv    # IDF-format partition table
+```
+
 ## Drop-in for `esptool.py` (busybox-style multi-call)
 
 esparagus is also a **multi-call binary** in the BusyBox sense: when invoked

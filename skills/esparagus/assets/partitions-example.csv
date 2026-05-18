@@ -1,0 +1,19 @@
+# ESP-IDF-format partition table. Pass via:
+#   esparagus partitions --table partitions-example.csv
+# or use any of:
+#   esparagus write-partition --table partitions-example.csv --name ota_0 app.bin
+#   esparagus read-partition  --table partitions-example.csv --name nvs    -o nvs.bin
+#   esparagus erase-partition --table partitions-example.csv --name nvs
+#
+# Columns: Name, Type, SubType, Offset, Size, Flags
+#   Offset blank  → auto-allocated (64K-aligned for app, 4K-aligned for data)
+#   Size suffixes: K = 1024, M = 1024*1024
+#   Flags: comma-separated. Supported: "encrypted", "readonly"
+#
+# Name,     Type, SubType,  Offset,  Size,  Flags
+nvs,        data, nvs,      0x9000,  0x6000,
+phy_init,   data, phy,      0xf000,  0x1000,
+factory,    app,  factory,  0x10000, 1M,
+ota_0,      app,  ota_0,    ,        1M,
+ota_1,      app,  ota_1,    ,        1M,
+storage,    data, fat,      ,        2M,
