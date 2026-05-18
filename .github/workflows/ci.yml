@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable, "1.80"]
+        rust: [stable, "1.85"]
     steps:
       - uses: actions/checkout@v4
 

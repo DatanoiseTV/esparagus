@@ -2,7 +2,7 @@
 
 
 [![License: GPL-2.0+](https://img.shields.io/badge/License-GPL%202.0%2B-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.80+-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org)
 [![CI](https://github.com/DatanoiseTV/esparagus/actions/workflows/ci.yml/badge.svg)](https://github.com/DatanoiseTV/esparagus/actions/workflows/ci.yml)
 
 **A Rust port of [esptool](https://github.com/espressif/esptool) with
@@ -39,7 +39,7 @@ trying to be the right tool when *another program* drives the flasher.
 
 ## Install
 
-From source (requires Rust 1.80+):
+From source (requires Rust 1.85+):
 
 ```sh
 cargo install --git https://github.com/DatanoiseTV/esparagus

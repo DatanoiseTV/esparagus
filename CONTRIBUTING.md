@@ -23,7 +23,9 @@ what Google ships" — please read this file before opening a PR.
 
 ## Local development
 
-Requires Rust 1.80 or newer (see `rust-version` in `Cargo.toml`).
+Requires Rust 1.85 or newer (see `rust-version` in `Cargo.toml`).
+The MSRV is set by transitive deps that depend on the `edition2024`
+Cargo feature, stabilised in Rust 1.85.
 
 ```sh
 git clone https://github.com/DatanoiseTV/esparagus
