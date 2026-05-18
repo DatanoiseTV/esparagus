@@ -230,7 +230,18 @@ impl Emitter {
         if g.json_stdout {
             let _ = writeln!(std::io::stdout().lock(), "{}", line);
         } else if g.plain {
-            let _ = writeln!(std::io::stderr().lock(), "{}", human(&logged));
+            // SerialLine *is* the user-visible firmware output — it belongs
+            // on stdout without a `[ts] ...` decoration, the way a normal
+            // `screen` / `minicom` session looks.  Other events are
+            // metadata and go to stderr so they don't get mixed into the
+            // captured serial stream.
+            if let Event::SerialLine { line: ref serial } = logged.event {
+                let mut out = std::io::stdout().lock();
+                let _ = writeln!(out, "{}", serial);
+                let _ = out.flush();
+            } else {
+                let _ = writeln!(std::io::stderr().lock(), "{}", human(&logged));
+            }
         }
         if let Some(f) = g.file.as_mut() {
             let _ = writeln!(f, "{}", line);

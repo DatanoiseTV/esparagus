@@ -148,6 +148,33 @@ pub fn hard_reset(transport: &mut dyn Transport, uses_usb: bool) -> Result<()> {
     Ok(())
 }
 
+/// Deterministic "reset into app firmware" sequence used by the serial
+/// monitor.  Differs from `hard_reset` in that it explicitly drives DTR
+/// (and therefore GPIO0) HIGH first, then pulses EN.  Without the explicit
+/// DTR step, the chip will boot into DOWNLOAD mode if the OS opened the
+/// port with DTR asserted (the default on many macOS / Linux drivers,
+/// including the CH343 used on common ESP32-P4 dev boards).
+///
+/// Sequence:
+///   DTR=false (IO0=HIGH) — guarantee GPIO0 strap is for normal boot
+///   RTS=false             — make sure we start from a deasserted EN
+///   sleep 50ms
+///   RTS=true  (EN=LOW)    — pull chip into reset
+///   sleep 100ms
+///   RTS=false (EN=HIGH)   — release reset; chip latches GPIO0=HIGH and
+///                           boots from flash
+///   DTR=false (final)     — leave the line idle
+pub fn reset_to_app(transport: &mut dyn Transport) -> Result<()> {
+    transport.set_dtr(false)?;
+    transport.set_rts(false)?;
+    sleep(Duration::from_millis(50));
+    transport.set_rts(true)?;
+    sleep(Duration::from_millis(100));
+    transport.set_rts(false)?;
+    transport.set_dtr(false)?;
+    Ok(())
+}
+
 /// Pick a sequence of reset attempts based on OS, mode, and VID/PID.
 /// Each entry has a delay value used by `classic_reset` / `unix_tight_reset`.
 ///

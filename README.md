@@ -113,6 +113,46 @@ esparagus merge-bin -o firmware-flash.bin \
   0x10000 app.bin
 ```
 
+Monitor the chip after flashing — GNU-expect-style. Exits 0 on first
+positive match, 30 on negative match, 31 on timeout, 32 on detected
+ESP panic / watchdog / abort (with the surrounding backtrace captured
+as a `crash_context` NDJSON event):
+
+```sh
+esparagus write-flash --after no-reset --port /dev/cu.usbserial-XYZ \
+  0x10000 app.bin
+
+esparagus monitor --port /dev/cu.usbserial-XYZ \
+  --expect "boot complete" \
+  --expect-not "FATAL" \
+  --timeout 30
+```
+
+Just stream the serial output (no patterns → exit 0 at the timeout):
+
+```sh
+esparagus monitor --port /dev/cu.usbserial-XYZ
+```
+
+One-shot flash + monitor (the LLM/CI loop's bread and butter):
+
+```sh
+esparagus flash-monitor --port /dev/cu.usbserial-XYZ \
+  --monitor-baud 115200 \
+  --expect "boot complete" --timeout 30 \
+  0x10000 app.bin
+```
+
+`--monitor-baud` is for the common case where the bootloader runs at
+460800 but firmware prints at 115200.  Defaults to the global `--baud`
+if omitted.
+
+The crash detector recognises Guru Meditation, task watchdog, abort,
+assert, stack-smashing, the Xtensa / RISC-V CPU exceptions
+(LoadProhibited, StoreProhibited, IllegalInstruction, ...), the
+"cache disabled" trap, and brownout. On a hit it captures the next
+~200 lines or up to a `Rebooting...` sentinel as full crash context.
+
 ## The CI / LLM feedback loop
 
 The `--json` flag turns stdout into a stream of one-JSON-per-line events
@@ -173,6 +213,9 @@ for the full mapping.
 | 13   | Flash operation failed (write/erase/read/MD5 mismatch) |
 | 14   | Stub loader upload or handshake failed |
 | 20   | Image header invalid |
+| 30   | Monitor `--expect-not` pattern matched |
+| 31   | Monitor `--timeout` reached without an `--expect` match |
+| 32   | Monitor detected an ESP crash (panic / WDT / abort / ...) |
 
 ## Subcommand summary
 
@@ -192,6 +235,7 @@ for the full mapping.
 | `erase-partition` | yes | Erase a named partition |
 | `backup` | yes | Dump entire flash (auto-sized; `.gz` aware) |
 | `restore` | yes | Restore a flash backup (`.gz` aware) |
+| `monitor` | yes | Serial monitor with `--expect`/`--expect-not` regex matching and built-in crash detection |
 | `elf2image` | no | Build a `.bin` image from an ELF |
 | `merge-bin` | no | Combine multiple bins into one padded image |
 

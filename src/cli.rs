@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(
     name = "esparagus",
     version,
@@ -70,7 +70,7 @@ pub struct Cli {
     pub command: Command,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum Command {
     /// Detect the chip and report its identity + flash JEDEC ID + MAC.
     Detect,
@@ -211,6 +211,35 @@ pub enum Command {
         /// Skip appending the SHA256 digest (legacy bootloaders).
         #[arg(long)]
         no_hash: bool,
+    },
+
+    /// Flash one or more files and then drop straight into the serial
+    /// monitor — the single-command "flash + check the firmware boots"
+    /// flow that LLM/CI loops want. Skips the post-flash reset since the
+    /// monitor's own reset_to_app sequence handles it.
+    #[command(name = "flash-monitor")]
+    FlashMonitor {
+        /// Pairs of (address, file). Same syntax as `write-flash`.
+        #[arg(required = true, num_args = 2..)]
+        args: Vec<String>,
+        /// Baud rate to use for the monitor phase. Useful when firmware
+        /// runs its UART at a different rate than the bootloader (e.g.
+        /// flash at 460800, but the app printk()s at 115200). Defaults
+        /// to the global --baud.
+        #[arg(long)]
+        monitor_baud: Option<u32>,
+        /// Monitor: hard ceiling on listen time (0 = forever).
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+        /// Monitor: success pattern (regex). Repeatable.
+        #[arg(long = "expect")]
+        expect: Vec<String>,
+        /// Monitor: failure pattern (regex). Repeatable.
+        #[arg(long = "expect-not")]
+        expect_not: Vec<String>,
+        /// Monitor: disable the built-in ESP crash detector.
+        #[arg(long)]
+        no_crash_detect: bool,
     },
 
     /// Open a serial monitor on the chip's UART/USB-CDC and watch the

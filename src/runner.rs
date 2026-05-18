@@ -78,6 +78,53 @@ pub fn run(cli: Cli) -> i32 {
             cli.log_file.as_deref(),
         );
     }
+
+    // flash-monitor: do the write-flash, then drop straight into the
+    // monitor at --monitor-baud. We synthesize a regular WriteFlash CLI
+    // for phase 1 so the existing chip-flow handles it; then if phase 1
+    // succeeded, hand off to run_monitor for phase 2.
+    if let Command::FlashMonitor {
+        args,
+        monitor_baud,
+        timeout,
+        expect,
+        expect_not,
+        no_crash_detect,
+    } = &cli.command
+    {
+        let mut phase1 = cli.clone();
+        phase1.command = Command::WriteFlash { args: args.clone() };
+        // Skip the post-flash reset; reset_to_app inside the monitor will
+        // bounce the chip into app firmware cleanly.
+        phase1.after = crate::cli::AfterMode::NoReset;
+        let flash_code = run_chip_flow(phase1, &port);
+        if flash_code != 0 {
+            return flash_code;
+        }
+        // Give the OS a moment to release the port (some macOS / Linux
+        // bridges hold the file descriptor briefly after close).
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let mb = monitor_baud.unwrap_or(cli.baud);
+        return run_monitor(
+            &port,
+            mb,
+            *timeout,
+            expect,
+            expect_not,
+            false,
+            *no_crash_detect,
+            cli.json,
+            cli.log_file.as_deref(),
+        );
+    }
+
+    run_chip_flow(cli, &port)
+}
+
+/// Body of the chip-touching path — extracted from `run()` so it can be
+/// invoked twice (once for the write-flash phase of `flash-monitor`, once
+/// for any of the regular subcommands).
+fn run_chip_flow(cli: Cli, port: &str) -> i32 {
     let baud = cli.baud;
 
     let emitter = match Emitter::new(cli.json, cli.log_file.as_deref()) {
@@ -92,7 +139,7 @@ pub fn run(cli: Cli) -> i32 {
     let mut report = ReportBuilder::new(
         tool.clone(),
         ReportTransport {
-            port: port.clone(),
+            port: port.to_string(),
             baud,
         },
     );
@@ -100,11 +147,11 @@ pub fn run(cli: Cli) -> i32 {
     emitter.info(Event::RunStart {
         tool: tool.clone(),
         chip_arg: cli.chip.clone(),
-        port: port.clone(),
+        port: port.to_string(),
         baud,
     });
 
-    let ok = match run_inner(&cli, &port, baud, &emitter, &mut report) {
+    let ok = match run_inner(&cli, port, baud, &emitter, &mut report) {
         Ok(()) => true,
         Err(e) => {
             emitter.error(Event::Error {
@@ -362,6 +409,7 @@ fn current_stage_name(cli: &Cli) -> String {
         Command::Elf2Image { .. } => "elf2image",
         Command::MergeBin { .. } => "merge_bin",
         Command::Monitor { .. } => "monitor",
+        Command::FlashMonitor { .. } => "flash_monitor",
     }
     .into()
 }
@@ -817,11 +865,14 @@ fn run_inner(
             *report.stages.last_mut().unwrap() = stage;
         }
 
-        Command::Elf2Image { .. } | Command::MergeBin { .. } | Command::Monitor { .. } => {
+        Command::Elf2Image { .. }
+        | Command::MergeBin { .. }
+        | Command::Monitor { .. }
+        | Command::FlashMonitor { .. } => {
             // These are dispatched before we ever open a port for the
             // protocol flow (offline ones via run_offline_if_applicable,
-            // monitor via its own branch in run()); reaching here would
-            // be a logic bug.
+            // monitor + flash-monitor via their own branches in run());
+            // reaching here would be a logic bug.
             unreachable!("offline / monitor command leaked into chip-connect path")
         }
 

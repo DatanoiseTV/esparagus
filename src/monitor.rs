@@ -133,11 +133,13 @@ pub fn run(
     });
 
     if !no_reset {
-        // EN pulse — the chip will print its boot log starting now.
-        // `uses_usb=false` is fine even on native-USB parts: the USB-Serial/
-        // JTAG endpoint stays enumerated; only the longer post-reset settle
-        // delay is skipped, which doesn't matter for a passive listener.
-        let _ = reset::hard_reset(&mut transport, false);
+        // Deliberate "boot the app, not the bootloader" sequence: drive
+        // DTR=false (so GPIO0 stays HIGH, normal-boot strap), then pulse
+        // RTS to bounce EN.  Plain hard_reset() doesn't touch DTR, which
+        // lets the OS-default DTR state pull GPIO0 LOW on some bridges
+        // (notably CH343 on ESP32-P4 dev boards) — putting the chip into
+        // DOWNLOAD mode instead of running the firmware.
+        let _ = reset::reset_to_app(&mut transport);
     }
 
     let started = Instant::now();
@@ -287,17 +289,14 @@ pub fn run(
     }
 }
 
-fn emit_line(emitter: &Emitter, raw: &[u8], lines_seen: &mut u64, print_raw: bool) {
+fn emit_line(emitter: &Emitter, raw: &[u8], lines_seen: &mut u64, _print_raw: bool) {
     let line = String::from_utf8_lossy(raw).into_owned();
     *lines_seen += 1;
-    if print_raw {
-        // Human mode: pipe the line straight to stdout so it feels like
-        // `screen` / `minicom`. Force a newline since we stripped it.
-        use std::io::Write;
-        let mut out = std::io::stdout().lock();
-        let _ = writeln!(out, "{}", line);
-        let _ = out.flush();
-    }
+    // Output routing is centralised in the Emitter: in human mode it sends
+    // SerialLine straight to stdout without a timestamp prefix; in JSON
+    // mode it emits the NDJSON event.  Either way, the log_file mirrors
+    // every event regardless.  This used to double-print to stdout AND
+    // stderr in human mode — fixed by funnelling through one path.
     emitter.info(Event::SerialLine { line });
 }
 
@@ -320,7 +319,9 @@ mod tests {
     fn detects_guru_meditation_xtensa() {
         // Verbatim panic header from an ESP32 LoadProhibited fault.
         assert_eq!(
-            classify("Guru Meditation Error: Core  0 panic'd (LoadProhibited). Exception was unhandled."),
+            classify(
+                "Guru Meditation Error: Core  0 panic'd (LoadProhibited). Exception was unhandled."
+            ),
             Some("panic")
         );
     }
@@ -335,13 +336,18 @@ mod tests {
 
     #[test]
     fn detects_abort() {
-        assert_eq!(classify("abort() was called at PC 0x40087812 on core 0"), Some("abort"));
+        assert_eq!(
+            classify("abort() was called at PC 0x40087812 on core 0"),
+            Some("abort")
+        );
     }
 
     #[test]
     fn detects_assert() {
         assert_eq!(
-            classify("assert failed: do_global_ctors components/cxx/cxx_guards.cpp:42 (some condition)"),
+            classify(
+                "assert failed: do_global_ctors components/cxx/cxx_guards.cpp:42 (some condition)"
+            ),
             Some("assert")
         );
     }
@@ -391,6 +397,8 @@ mod tests {
 
     #[test]
     fn end_sentinels_match_rebooting() {
-        assert!(CRASH_END_SENTINELS.iter().any(|s| "Rebooting...".contains(s)));
+        assert!(CRASH_END_SENTINELS
+            .iter()
+            .any(|s| "Rebooting...".contains(s)));
     }
 }
