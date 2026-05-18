@@ -38,6 +38,9 @@ indicatif = "0.17"
 base64 = "0.22"
 hex = "0.4"
 regex = "1.10"
+ratatui = "0.29"
+crossterm = "0.28"
+crc32fast = "1.5"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["fs", "ioctl", "term"] }

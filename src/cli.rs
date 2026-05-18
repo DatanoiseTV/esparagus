@@ -115,6 +115,15 @@ pub enum Command {
     /// Hard-reset the chip (release EN line).
     Reset,
 
+    /// Read and view / export NVS (Non-Volatile Storage) partition contents.
+    /// Read-only in this release; the writer is a deliberate next-session
+    /// task because corrupt NVS bytes can make the firmware refuse to
+    /// mount the partition.
+    Nvs {
+        #[command(subcommand)]
+        action: NvsAction,
+    },
+
     /// List the partition table from a CSV file or read from the chip's
     /// flash at offset 0x8000.
     Partitions {
@@ -289,6 +298,35 @@ pub enum Command {
         ///   0x0 bootloader.bin 0x8000 partitions.bin 0x10000 app.bin
         #[arg(required = true, num_args = 2..)]
         args: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum NvsAction {
+    /// Open an interactive table view of the NVS partition. Press `/` to
+    /// filter, `q` or Esc to quit. Defaults to reading the partition
+    /// named "nvs" from the chip; pass `--from-file PATH` to inspect a
+    /// previously dumped partition bin.
+    View {
+        /// Partition name on the chip (default: "nvs").
+        #[arg(long, default_value = "nvs")]
+        name: String,
+        /// Inspect a local file (raw partition bytes) instead of reading
+        /// from the chip.
+        #[arg(long)]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Read the NVS partition and write its contents to a JSON file.
+    /// Useful as the read half of an "export → edit JSON → import"
+    /// workflow once the writer lands.
+    Export {
+        #[arg(long, default_value = "nvs")]
+        name: String,
+        #[arg(long)]
+        from_file: Option<PathBuf>,
+        #[arg(long, short = 'o')]
+        output: PathBuf,
     },
 }
 

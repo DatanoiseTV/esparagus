@@ -405,6 +405,7 @@ fn current_stage_name(cli: &Cli) -> String {
         Command::ErasePartition { .. } => "erase_partition",
         Command::Backup { .. } => "backup",
         Command::Restore { .. } => "restore",
+        Command::Nvs { .. } => "nvs",
         // Offline commands handled before we get here.
         Command::Elf2Image { .. } => "elf2image",
         Command::MergeBin { .. } => "merge_bin",
@@ -714,6 +715,42 @@ fn run_inner(
             // Handled by the after-mode below.
         }
 
+        Command::Nvs { action } => match action {
+            crate::cli::NvsAction::View { name, from_file } => {
+                let (bytes, source) = nvs_load_bytes(&mut conn, name, from_file.as_deref())?;
+                let partition = crate::nvs::parse(&bytes)?;
+                emitter.info(Event::PartitionResolved {
+                    name: format!("nvs:{}", name),
+                    ptype: "data".into(),
+                    subtype: "nvs".into(),
+                    offset: source.clone(),
+                    size: bytes.len() as u64,
+                });
+                // Run TUI synchronously. It restores the terminal in its
+                // own RAII guard on return / panic.
+                crate::tui::run_nvs_view(&partition, &source)?;
+            }
+            crate::cli::NvsAction::Export {
+                name,
+                from_file,
+                output,
+            } => {
+                let (bytes, _source) = nvs_load_bytes(&mut conn, name, from_file.as_deref())?;
+                let partition = crate::nvs::parse(&bytes)?;
+                let json = serde_json::to_string_pretty(&partition)
+                    .map_err(|e| Error::Other(format!("serialize nvs: {e}")))?;
+                std::fs::write(output, json)?;
+                emitter.info(Event::Warning {
+                    message: format!(
+                        "exported {} NVS items ({} bytes) to {}",
+                        partition.items.len(),
+                        bytes.len(),
+                        output.display()
+                    ),
+                });
+            }
+        },
+
         Command::Partitions { table } => {
             let pt = load_partition_table(&mut conn, table.as_deref(), emitter)?;
             // Emit per-partition resolved events so an LLM or CI script can
@@ -934,22 +971,54 @@ fn run_inner(
 }
 
 fn should_use_stub(cmd: &Command) -> bool {
-    matches!(
-        cmd,
+    match cmd {
         Command::EraseFlash
-            | Command::EraseRegion { .. }
-            | Command::WriteFlash { .. }
-            | Command::ReadFlash { .. }
-            | Command::Detect
-            | Command::ReadMac
-            | Command::FlashId
-            | Command::Partitions { .. }
-            | Command::WritePartition { .. }
-            | Command::ReadPartition { .. }
-            | Command::ErasePartition { .. }
-            | Command::Backup { .. }
-            | Command::Restore { .. }
-    )
+        | Command::EraseRegion { .. }
+        | Command::WriteFlash { .. }
+        | Command::ReadFlash { .. }
+        | Command::Detect
+        | Command::ReadMac
+        | Command::FlashId
+        | Command::Partitions { .. }
+        | Command::WritePartition { .. }
+        | Command::ReadPartition { .. }
+        | Command::ErasePartition { .. }
+        | Command::Backup { .. }
+        | Command::Restore { .. } => true,
+        // NVS view/export from a file is offline (no chip); from the chip
+        // it needs the stub for read_flash. We can't tell at this site
+        // which arg the user picked, so always say "yes" for Nvs — when
+        // the chip-flow runs and we go down the from_file path it just
+        // skips the read_flash call.
+        Command::Nvs { .. } => true,
+        _ => false,
+    }
+}
+
+/// Load the raw bytes of an NVS partition either from a local file (for
+/// offline inspection) or by reading the named partition from the chip's
+/// flash. Returns the bytes and a human-readable source label for the TUI
+/// header.
+fn nvs_load_bytes(
+    conn: &mut Connection,
+    name: &str,
+    from_file: Option<&Path>,
+) -> Result<(Vec<u8>, String)> {
+    if let Some(p) = from_file {
+        let bytes = std::fs::read(p)?;
+        return Ok((bytes, format!("file:{}", p.display())));
+    }
+    // Resolve the partition by name via the on-chip partition table.
+    let raw = ops::read_flash(conn, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SECTOR, None)?;
+    let table = PartitionTable::from_binary(&raw)?;
+    let entry = table
+        .find(name)
+        .ok_or_else(|| Error::Other(format!("no partition named {:?} on chip", name)))?;
+    let bytes = ops::read_flash(conn, entry.offset, entry.size, None)?;
+    Ok((
+        bytes,
+        format!("flash:{:#x}+{:#x}", entry.offset, entry.size),
+    ))
 }
 
 fn load_partition_table(
