@@ -5,3 +5,10 @@ Cargo.lock.bak
 *.report.json
 .DS_Store
 /Cargo.lock.bak
+
+# Backup / dump artifacts produced by `esparagus backup` and `esparagus
+# read-flash` should never get committed — they're chip-state snapshots,
+# not source.
+*.bin
+*.bin.gz
+!stubs/*

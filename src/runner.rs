@@ -17,6 +17,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::chip::Chip;
 use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
+use crate::cli::FileCompression;
 use crate::observe::{Emitter, Event, Report, ReportBuilder, ReportTransport};
 use crate::partition::{PartitionEntry, PartitionTable, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SECTOR};
 use crate::protocol::Connection;
@@ -359,7 +360,7 @@ fn run_inner(
             // Configure SPI before any write.
             ops::flash_spi_attach(&mut conn, 0)?;
             for (addr, path) in &pairs {
-                write_one(*addr, path, &mut conn, chip, emitter, report, cli.json)?;
+                write_one(*addr, path, &mut conn, chip, emitter, report, cli.json, !cli.no_compress)?;
             }
         }
         Command::ReadFlash {
@@ -440,7 +441,16 @@ fn run_inner(
                 )));
             }
             ops::flash_spi_attach(&mut conn, 0)?;
-            write_payload(emitter, report, &mut conn, chip, entry.offset, &bytes, cli.json)?;
+            write_payload(
+                emitter,
+                report,
+                &mut conn,
+                chip,
+                entry.offset,
+                &bytes,
+                cli.json,
+                !cli.no_compress,
+            )?;
         }
 
         Command::ReadPartition {
@@ -504,7 +514,7 @@ fn run_inner(
             report.finish_stage(g, true, None);
         }
 
-        Command::Backup { output, size } => {
+        Command::Backup { output, size, compress } => {
             let resolved_size = match size {
                 Some(s) => *s,
                 None => {
@@ -534,7 +544,8 @@ fn run_inner(
             if let Some(b) = bar.as_ref() {
                 b.finish_and_clear();
             }
-            std::fs::write(output, &data)?;
+            let use_gz = resolve_file_gz(*compress, output);
+            write_backup_file(output, &data, use_gz)?;
             let md5 = md5_hex(&data);
             emitter.info(Event::BackupDone {
                 size: data.len() as u64,
@@ -547,7 +558,7 @@ fn run_inner(
         }
 
         Command::Restore { input } => {
-            let bytes = std::fs::read(input)?;
+            let bytes = read_restore_file(input)?;
             ops::flash_spi_attach(&mut conn, 0)?;
             let g = report.start_stage("restore");
             emitter.info(Event::RestoreBegin {
@@ -560,7 +571,14 @@ fn run_inner(
                         b.set_position(w);
                     }
                 };
-                ops::write_flash(&mut conn, chip, 0, &bytes, Some(&mut progress))?
+                ops::write_flash(
+                    &mut conn,
+                    chip,
+                    0,
+                    &bytes,
+                    Some(&mut progress),
+                    !cli.no_compress,
+                )?
             };
             if let Some(b) = bar.as_ref() {
                 b.finish_and_clear();
@@ -669,6 +687,7 @@ fn md5_hex(data: &[u8]) -> String {
     format!("{:x}", h.finalize())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_payload(
     emitter: &Emitter,
     report: &mut ReportBuilder,
@@ -677,6 +696,7 @@ fn write_payload(
     addr: u32,
     bytes: &[u8],
     json_mode: bool,
+    compress: bool,
 ) -> Result<()> {
     let stage_name = format!("write_flash {:#010x}", addr);
     let g = report.start_stage(&stage_name);
@@ -684,7 +704,7 @@ fn write_payload(
     emitter.info(Event::WriteBegin {
         addr: addr_str.clone(),
         size: bytes.len() as u64,
-        compressed: true,
+        compressed: compress,
     });
     let bar = make_bar(bytes.len() as u64, json_mode);
     let md5 = {
@@ -706,7 +726,7 @@ fn write_payload(
                 });
             }
         };
-        ops::write_flash(conn, chip, addr, bytes, Some(&mut progress))?
+        ops::write_flash(conn, chip, addr, bytes, Some(&mut progress), compress)?
     };
     if let Some(b) = bar.as_ref() {
         b.finish_and_clear();
@@ -723,6 +743,51 @@ fn write_payload(
     Ok(())
 }
 
+fn resolve_file_gz(mode: FileCompression, path: &Path) -> bool {
+    match mode {
+        FileCompression::Auto => {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("gz"))
+                .unwrap_or(false)
+        }
+        FileCompression::Gz => true,
+        FileCompression::None => false,
+    }
+}
+
+fn write_backup_file(path: &Path, data: &[u8], gz: bool) -> Result<()> {
+    if gz {
+        use std::io::Write;
+        let f = std::fs::File::create(path)?;
+        let mut enc = flate2::write::GzEncoder::new(f, flate2::Compression::best());
+        enc.write_all(data)?;
+        enc.finish()?;
+    } else {
+        std::fs::write(path, data)?;
+    }
+    Ok(())
+}
+
+fn read_restore_file(path: &Path) -> Result<Vec<u8>> {
+    let raw = std::fs::read(path)?;
+    let is_gz_by_ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("gz"))
+        .unwrap_or(false);
+    let is_gz_by_magic = raw.len() >= 2 && raw[0] == 0x1F && raw[1] == 0x8B;
+    if is_gz_by_ext || is_gz_by_magic {
+        use std::io::Read;
+        let mut dec = flate2::read::GzDecoder::new(&raw[..]);
+        let mut out = Vec::new();
+        dec.read_to_end(&mut out)?;
+        Ok(out)
+    } else {
+        Ok(raw)
+    }
+}
+
 fn make_bar(total: u64, suppress: bool) -> Option<ProgressBar> {
     if suppress {
         return None;
@@ -735,6 +800,7 @@ fn make_bar(total: u64, suppress: bool) -> Option<ProgressBar> {
     Some(bar)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_one(
     addr: u32,
     path: &Path,
@@ -743,6 +809,7 @@ fn write_one(
     emitter: &Emitter,
     report: &mut ReportBuilder,
     json_mode: bool,
+    compress: bool,
 ) -> Result<()> {
     let stage_name = format!("write_flash {:#010x}", addr);
     let g = report.start_stage(&stage_name);
@@ -768,7 +835,7 @@ fn write_one(
     emitter.info(Event::WriteBegin {
         addr: format!("{:#010x}", addr),
         size: bytes.len() as u64,
-        compressed: true,
+        compressed: compress,
     });
 
     let bar = make_bar(bytes.len() as u64, json_mode);
@@ -792,7 +859,7 @@ fn write_one(
                 });
             }
         };
-        ops::write_flash(conn, chip, addr, &bytes, Some(&mut progress))?
+        ops::write_flash(conn, chip, addr, &bytes, Some(&mut progress), compress)?
     };
     if let Some(b) = bar.as_ref() {
         b.finish_and_clear();

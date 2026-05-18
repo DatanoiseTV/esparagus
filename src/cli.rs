@@ -60,6 +60,12 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub trace: bool,
 
+    /// Disable on-the-wire deflate compression for flash writes (FLASH_DATA
+    /// instead of FLASH_DEFL_DATA). ~3x slower; useful when debugging stub
+    /// or compressed-mode issues. Matches esptool's --no-compress.
+    #[arg(long, global = true)]
+    pub no_compress: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -151,19 +157,39 @@ pub enum Command {
 
     /// Dump the entire flash to a file. Size auto-detected from the SPI
     /// flash JEDEC capacity byte unless --size is provided.
+    ///
+    /// File-level compression: pass an output path ending in .gz for gzip,
+    /// or pass --compress gz explicitly. Auto-detection from extension is
+    /// the default.
     Backup {
         #[arg(long, short = 'o')]
         output: PathBuf,
         /// Override size (bytes; hex prefix accepted). Default: auto-detect.
         #[arg(long, value_parser = parse_u32)]
         size: Option<u32>,
+        /// File-level compression mode.
+        #[arg(long, default_value = "auto")]
+        compress: FileCompression,
     },
 
-    /// Restore a previously-dumped flash image, starting at 0x0.
+    /// Restore a previously-dumped flash image, starting at 0x0. The input
+    /// is auto-decompressed if it ends in .gz or starts with the gzip
+    /// magic bytes 0x1F 0x8B.
     Restore {
-        /// File to restore. Must be ≤ flash size.
+        /// File to restore. Must be ≤ flash size after decompression.
         input: PathBuf,
     },
+}
+
+/// File-level compression mode for the `backup` subcommand.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum FileCompression {
+    /// Infer from output extension (.gz → gzip, anything else → none).
+    Auto,
+    /// Always write gzip.
+    Gz,
+    /// Always write raw.
+    None,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]

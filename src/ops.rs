@@ -383,10 +383,27 @@ fn rounded_erase_size(offset: u32, size: u32) -> u32 {
 /// Progress callback signature: (bytes_written, total).
 pub type ProgressFn<'a> = &'a mut dyn FnMut(u64, u64);
 
-/// Write `data` to flash at `addr`, using compressed transport (FLASH_DEFL_*).
-/// On the ROM bootloader, the chip erases the region up front (slow); on the
-/// stub, erase happens as we write (fast).
+/// Write `data` to flash at `addr`. Dispatches to the compressed
+/// (FLASH_DEFL_*) or raw (FLASH_DATA) wire path. The chip-side behavior is
+/// identical: ROM erases up front (slow); stub erases as it writes.
 pub fn write_flash(
+    conn: &mut Connection,
+    chip: &Chip,
+    addr: u32,
+    data: &[u8],
+    progress: Option<ProgressFn>,
+    compress: bool,
+) -> Result<String> {
+    if compress {
+        write_flash_compressed(conn, chip, addr, data, progress)
+    } else {
+        write_flash_uncompressed(conn, chip, addr, data, progress)
+    }
+}
+
+/// Compressed write path. Sends zlib-deflate blocks via FLASH_DEFL_BEGIN /
+/// FLASH_DEFL_DATA / FLASH_DEFL_END.  esptool's default.
+pub fn write_flash_compressed(
     conn: &mut Connection,
     chip: &Chip,
     addr: u32,
@@ -503,6 +520,119 @@ pub fn write_flash(
 
     // Compute host MD5 over the *uncompressed* data, then have the device
     // hash the same region; compare.
+    let mut hasher = Md5::new();
+    hasher.update(data);
+    let host_md5 = format!("{:x}", hasher.finalize());
+
+    let device_md5 = md5_region(conn, addr, size)?;
+    if !host_md5.eq_ignore_ascii_case(&device_md5) {
+        return Err(Error::Md5Mismatch {
+            addr,
+            computed: host_md5,
+            device: device_md5,
+        });
+    }
+    Ok(host_md5)
+}
+
+/// Uncompressed write path. Sends raw blocks via FLASH_BEGIN / FLASH_DATA /
+/// FLASH_END.  ~3x slower over the wire but matches esptool's `--no-compress`.
+pub fn write_flash_uncompressed(
+    conn: &mut Connection,
+    chip: &Chip,
+    addr: u32,
+    data: &[u8],
+    mut progress: Option<ProgressFn>,
+) -> Result<String> {
+    let size = data.len() as u32;
+    if size == 0 {
+        return Ok(String::new());
+    }
+
+    let num_blocks = (data.len()).div_ceil(FLASH_WRITE_SIZE);
+    let erase_size = rounded_erase_size(addr, size);
+
+    let mut params = Vec::with_capacity(20);
+    let mut buf = [0u8; 16];
+    LittleEndian::write_u32(&mut buf[0..4], erase_size);
+    LittleEndian::write_u32(&mut buf[4..8], num_blocks as u32);
+    LittleEndian::write_u32(&mut buf[8..12], FLASH_WRITE_SIZE as u32);
+    LittleEndian::write_u32(&mut buf[12..16], addr);
+    params.extend_from_slice(&buf);
+    if conn.stub_running || chip.name != "ESP32" {
+        params.extend_from_slice(&[0, 0, 0, 0]);
+    }
+
+    let begin_timeout = if conn.stub_running {
+        DEFAULT_TIMEOUT
+    } else {
+        timeout_per_mb(ERASE_REGION_TIMEOUT_PER_MB, erase_size as usize)
+    };
+    conn.check_command(
+        "enter flash mode",
+        Cmd::FlashBegin,
+        &params,
+        0,
+        0,
+        begin_timeout,
+    )?;
+
+    let mut written: usize = 0;
+    for (seq, chunk) in data.chunks(FLASH_WRITE_SIZE).enumerate() {
+        // The last block may be shorter than FLASH_WRITE_SIZE; pad with 0xFF
+        // so the chip's writer sees a full block.
+        let padded: Vec<u8> = if chunk.len() < FLASH_WRITE_SIZE {
+            let mut v = chunk.to_vec();
+            v.resize(FLASH_WRITE_SIZE, 0xFF);
+            v
+        } else {
+            chunk.to_vec()
+        };
+        let mut hdr = [0u8; 16];
+        LittleEndian::write_u32(&mut hdr[0..4], padded.len() as u32);
+        LittleEndian::write_u32(&mut hdr[4..8], seq as u32);
+        let mut payload = Vec::with_capacity(16 + padded.len());
+        payload.extend_from_slice(&hdr);
+        payload.extend_from_slice(&padded);
+        let chk = checksum(&padded) as u32;
+
+        let mut attempts_left = WRITE_BLOCK_ATTEMPTS;
+        loop {
+            attempts_left -= 1;
+            match conn.check_command(
+                "write flash block",
+                Cmd::FlashData,
+                &payload,
+                chk,
+                0,
+                DEFAULT_TIMEOUT,
+            ) {
+                Ok(_) => break,
+                Err(e) if attempts_left > 0 => {
+                    debug!(error = %e, "block write retry");
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        written += chunk.len();
+        if let Some(pf) = progress.as_deref_mut() {
+            pf(written as u64, data.len() as u64);
+        }
+    }
+
+    if conn.stub_running {
+        let mut end = [0u8; 4];
+        LittleEndian::write_u32(&mut end, 1); // stay in bootloader/stub
+        conn.check_command(
+            "leave flash mode",
+            Cmd::FlashEnd,
+            &end,
+            0,
+            0,
+            DEFAULT_TIMEOUT,
+        )?;
+    }
+
     let mut hasher = Md5::new();
     hasher.update(data);
     let host_md5 = format!("{:x}", hasher.finalize());
