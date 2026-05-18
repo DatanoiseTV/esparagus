@@ -117,7 +117,7 @@ pub fn run_spiflash_command(
     } else {
         // Pack `data` into little-endian 32-bit words.
         let mut padded = data.to_vec();
-        while padded.len() % 4 != 0 {
+        while !padded.len().is_multiple_of(4) {
             padded.push(0);
         }
         let mut next = w0_reg;
@@ -354,7 +354,7 @@ pub fn erase_region(conn: &mut Connection, offset: u32, size: u32) -> Result<()>
             "erase-region requires the stub loader (don't pass --no-stub)".into(),
         ));
     }
-    if offset % FLASH_SECTOR_SIZE != 0 || size % FLASH_SECTOR_SIZE != 0 {
+    if !offset.is_multiple_of(FLASH_SECTOR_SIZE) || !size.is_multiple_of(FLASH_SECTOR_SIZE) {
         return Err(Error::Other(format!(
             "erase region offset and size must be {}B aligned",
             FLASH_SECTOR_SIZE

@@ -214,7 +214,7 @@ impl NvsPartition {
 
 /// Parse a full NVS partition.  `bytes.len()` must be a multiple of `PAGE_SIZE`.
 pub fn parse(bytes: &[u8]) -> Result<NvsPartition> {
-    if bytes.len() % PAGE_SIZE != 0 {
+    if !bytes.len().is_multiple_of(PAGE_SIZE) {
         return Err(Error::Other(format!(
             "NVS partition not a multiple of {}B (got {}B)",
             PAGE_SIZE,

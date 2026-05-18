@@ -2,7 +2,7 @@
 name = "esparagus"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "GPL-2.0-or-later"
 description = "ESP32 family flasher with structured observability for CI/CD and LLM feedback loops"
 repository = "https://github.com/DatanoiseTV/esparagus"

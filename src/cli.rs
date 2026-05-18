@@ -389,7 +389,7 @@ impl From<AfterMode> for crate::reset::AfterMode {
 
 /// Parse the (address, file) repeated pairs from `write-flash`.
 pub fn parse_write_pairs(args: &[String]) -> Result<Vec<(u32, PathBuf)>, String> {
-    if args.len() % 2 != 0 {
+    if !args.len().is_multiple_of(2) {
         return Err("write-flash expects pairs of <address> <file>".into());
     }
     let mut out = Vec::with_capacity(args.len() / 2);

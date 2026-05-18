@@ -149,7 +149,7 @@ pub fn decode_packet(frame: &[u8]) -> Result<Response> {
 /// Matches upstream esptool `sync()`.
 pub fn sync_payload() -> Vec<u8> {
     let mut p = vec![0x07, 0x07, 0x12, 0x20];
-    p.extend(std::iter::repeat(0x55).take(32));
+    p.extend(std::iter::repeat_n(0x55, 32));
     p
 }
 

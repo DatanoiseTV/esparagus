@@ -268,7 +268,7 @@ pub fn build_image(
     // Pad with zero bytes so the checksum byte lands at the last byte of a
     // 16-byte block (i.e. `out.len() + 1` is a multiple of 16).
     let pad = (IMAGE_ALIGN - (out.len() + 1) % IMAGE_ALIGN) % IMAGE_ALIGN;
-    out.extend(std::iter::repeat(0u8).take(pad));
+    out.extend(std::iter::repeat_n(0u8, pad));
     out.push(chk);
 
     if params.hash_append {

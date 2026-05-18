@@ -23,9 +23,12 @@ what Google ships" — please read this file before opening a PR.
 
 ## Local development
 
-Requires Rust 1.85 or newer (see `rust-version` in `Cargo.toml`).
-The MSRV is set by transitive deps that depend on the `edition2024`
-Cargo feature, stabilised in Rust 1.85.
+Requires Rust 1.88 or newer (see `rust-version` in `Cargo.toml`).
+The floor is set by transitive deps (darling 0.23, instability
+0.3.12) that demand rustc 1.88; their `edition2024` use requires
+1.85 minimum and their own MSRV pushes another bump on top. CI only
+tests against stable — pinning a separate MSRV job costs more than
+it earns now that every dep bump tightens the floor.
 
 ```sh
 git clone https://github.com/DatanoiseTV/esparagus
