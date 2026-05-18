@@ -38,6 +38,10 @@ pub struct Runtime {
 /// Top-level entrypoint used by main.rs. Returns the appropriate process
 /// exit code; the report has already been written.
 pub fn run(cli: Cli) -> i32 {
+    // Offline subcommands (file-only) don't need a serial port at all.
+    if let Some(code) = run_offline_if_applicable(&cli) {
+        return code;
+    }
     // Required port for everything but `--help` and `--version`, which clap
     // handles itself.
     let port = match &cli.port {
@@ -99,6 +103,129 @@ pub fn run(cli: Cli) -> i32 {
     }
 }
 
+/// Dispatch the file-only subcommands. Returns `Some(exit_code)` if it
+/// handled the command, `None` if the command needs a chip connection.
+fn run_offline_if_applicable(cli: &Cli) -> Option<i32> {
+    match &cli.command {
+        Command::Elf2Image {
+            input,
+            output,
+            target_chip,
+            flash_mode,
+            flash_freq,
+            flash_size,
+            min_rev_full,
+            max_rev_full,
+            no_hash,
+        } => Some(handle_elf2image(
+            input,
+            output,
+            target_chip,
+            flash_mode,
+            flash_freq,
+            flash_size,
+            *min_rev_full,
+            *max_rev_full,
+            *no_hash,
+        )),
+        Command::MergeBin {
+            output,
+            target_size,
+            target_offset,
+            args,
+        } => Some(handle_merge_bin(output, *target_size, *target_offset, args)),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_elf2image(
+    input: &Path,
+    output: &Path,
+    target_chip: &str,
+    flash_mode: &str,
+    flash_freq: &str,
+    flash_size: &str,
+    min_rev_full: u16,
+    max_rev_full: u16,
+    no_hash: bool,
+) -> i32 {
+    let chip = match chip::by_name(target_chip) {
+        Some(c) => c,
+        None => {
+            eprintln!("error: unknown chip {:?} (supported: {:?})", target_chip, chip::names());
+            return 2;
+        }
+    };
+    let mode = match crate::imagegen::encode_flash_mode(flash_mode) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("error: {}", e); return 2; }
+    };
+    let freq = match crate::imagegen::encode_flash_freq(chip, flash_freq) {
+        Ok(f) => f,
+        Err(e) => { eprintln!("error: {}", e); return 2; }
+    };
+    let size = match crate::imagegen::encode_flash_size(flash_size) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("error: {}", e); return 2; }
+    };
+    let params = crate::imagegen::ImageParams {
+        flash_mode: mode,
+        flash_freq: freq,
+        flash_size: size,
+        min_rev: (min_rev_full / 100) as u8,
+        min_rev_full,
+        max_rev_full,
+        hash_append: !no_hash,
+    };
+    let elf = match std::fs::read(input) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("error: read {}: {}", input.display(), e); return 1; }
+    };
+    let img = match crate::imagegen::elf_to_image(&elf, &params, chip) {
+        Ok(i) => i,
+        Err(e) => { eprintln!("error: {}", e); return 20; }
+    };
+    if let Err(e) = std::fs::write(output, &img) {
+        eprintln!("error: write {}: {}", output.display(), e);
+        return 1;
+    }
+    eprintln!("wrote {} ({} bytes)", output.display(), img.len());
+    0
+}
+
+fn handle_merge_bin(
+    output: &Path,
+    target_size: Option<u32>,
+    target_offset: u32,
+    args: &[String],
+) -> i32 {
+    let pairs = match crate::cli::parse_write_pairs(args) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("error: {}", e); return 2; }
+    };
+    let mut loaded: Vec<(u32, Vec<u8>)> = Vec::with_capacity(pairs.len());
+    for (addr, path) in &pairs {
+        match std::fs::read(path) {
+            Ok(b) => loaded.push((*addr, b)),
+            Err(e) => {
+                eprintln!("error: read {}: {}", path.display(), e);
+                return 1;
+            }
+        }
+    }
+    let merged = match crate::imagegen::merge_bin(&loaded, target_offset, target_size) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("error: {}", e); return 1; }
+    };
+    if let Err(e) = std::fs::write(output, &merged) {
+        eprintln!("error: write {}: {}", output.display(), e);
+        return 1;
+    }
+    eprintln!("wrote {} ({} bytes)", output.display(), merged.len());
+    0
+}
+
 fn current_stage_name(cli: &Cli) -> String {
     match &cli.command {
         Command::Detect => "detect",
@@ -115,6 +242,9 @@ fn current_stage_name(cli: &Cli) -> String {
         Command::ErasePartition { .. } => "erase_partition",
         Command::Backup { .. } => "backup",
         Command::Restore { .. } => "restore",
+        // Offline commands handled before we get here.
+        Command::Elf2Image { .. } => "elf2image",
+        Command::MergeBin { .. } => "merge_bin",
     }
     .into()
 }
@@ -555,6 +685,12 @@ fn run_inner(
             stage.bytes = Some(data.len() as u64);
             stage.md5 = Some(md5);
             *report.stages.last_mut().unwrap() = stage;
+        }
+
+        Command::Elf2Image { .. } | Command::MergeBin { .. } => {
+            // These are dispatched by run_offline_if_applicable before we
+            // ever open a port; reaching here would be a logic bug.
+            unreachable!("offline command leaked into chip-connect path")
         }
 
         Command::Restore { input } => {

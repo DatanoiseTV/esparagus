@@ -179,6 +179,60 @@ pub enum Command {
         /// File to restore. Must be ≤ flash size after decompression.
         input: PathBuf,
     },
+
+    /// Build an ESP firmware image from an ELF file (offline; no chip
+    /// needed). Produces a binary that can be flashed at the offset
+    /// matching the partition table's app slot.
+    #[command(name = "elf2image")]
+    Elf2Image {
+        /// Input ELF file.
+        input: PathBuf,
+        /// Output .bin path.
+        #[arg(long, short = 'o')]
+        output: PathBuf,
+        /// Target chip family (required: --chip esp32-s3, etc.).
+        #[arg(long, short = 'C')]
+        target_chip: String,
+        /// Flash mode encoded in the header.
+        #[arg(long, default_value = "dio")]
+        flash_mode: String,
+        /// Flash frequency string ("40m", "80m", etc.; chip-dependent).
+        #[arg(long, default_value = "40m")]
+        flash_freq: String,
+        /// Flash size string ("4MB", "16MB", etc.).
+        #[arg(long, default_value = "4MB")]
+        flash_size: String,
+        /// Minimum required chip revision (major*100+minor).
+        #[arg(long, default_value_t = 0)]
+        min_rev_full: u16,
+        /// Maximum supported chip revision (major*100+minor).
+        #[arg(long, default_value_t = 0xFFFF)]
+        max_rev_full: u16,
+        /// Skip appending the SHA256 digest (legacy bootloaders).
+        #[arg(long)]
+        no_hash: bool,
+    },
+
+    /// Merge multiple binaries into one padded image (offline; no chip
+    /// needed). Useful for building a complete flash image (bootloader +
+    /// partition table + app + ...) for distribution.
+    #[command(name = "merge-bin")]
+    MergeBin {
+        /// Output .bin path.
+        #[arg(long, short = 'o')]
+        output: PathBuf,
+        /// Pad output to this size (bytes; hex prefix accepted).
+        #[arg(long, value_parser = parse_u32)]
+        target_size: Option<u32>,
+        /// Subtract this offset from each piece's address (so the result
+        /// starts at offset 0 of the file). Default 0.
+        #[arg(long, default_value_t = 0, value_parser = parse_u32)]
+        target_offset: u32,
+        /// Pairs of (address, file). Example:
+        ///   0x0 bootloader.bin 0x8000 partitions.bin 0x10000 app.bin
+        #[arg(required = true, num_args = 2..)]
+        args: Vec<String>,
+    },
 }
 
 /// File-level compression mode for the `backup` subcommand.
