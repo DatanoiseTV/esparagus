@@ -134,11 +134,13 @@ pub fn decode_packet(frame: &[u8]) -> Result<Response> {
     let value = LittleEndian::read_u32(&frame[4..8]);
     let data = frame[8..]
         .get(..len)
-        .ok_or_else(|| Error::Other(format!(
-            "declared length {} exceeds payload {}",
-            len,
-            frame.len() - 8
-        )))?
+        .ok_or_else(|| {
+            Error::Other(format!(
+                "declared length {} exceeds payload {}",
+                len,
+                frame.len() - 8
+            ))
+        })?
         .to_vec();
     Ok(Response { op, value, data })
 }
@@ -162,7 +164,10 @@ mod tests {
 
     #[test]
     fn checksum_xor_fold() {
-        assert_eq!(checksum(&[0x01, 0x02, 0x03]), CHECKSUM_INIT ^ 0x01 ^ 0x02 ^ 0x03);
+        assert_eq!(
+            checksum(&[0x01, 0x02, 0x03]),
+            CHECKSUM_INIT ^ 0x01 ^ 0x02 ^ 0x03
+        );
     }
 
     #[test]

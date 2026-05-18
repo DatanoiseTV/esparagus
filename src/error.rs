@@ -36,10 +36,7 @@ pub enum Error {
     SyncTimeout { attempts: u32 },
 
     #[error("unknown / unsupported chip (magic={magic:#010x}, chip_id={chip_id:?})")]
-    UnknownChip {
-        magic: u32,
-        chip_id: Option<u32>,
-    },
+    UnknownChip { magic: u32, chip_id: Option<u32> },
 
     #[error("chip mismatch: requested {requested}, found {found}")]
     ChipMismatch { requested: String, found: String },

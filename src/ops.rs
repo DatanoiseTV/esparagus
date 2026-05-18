@@ -699,7 +699,14 @@ pub fn read_flash(
     LittleEndian::write_u32(&mut payload[4..8], length);
     LittleEndian::write_u32(&mut payload[8..12], FLASH_SECTOR_SIZE);
     LittleEndian::write_u32(&mut payload[12..16], 64);
-    conn.check_command("read flash", Cmd::ReadFlash, &payload, 0, 0, DEFAULT_TIMEOUT)?;
+    conn.check_command(
+        "read flash",
+        Cmd::ReadFlash,
+        &payload,
+        0,
+        0,
+        DEFAULT_TIMEOUT,
+    )?;
 
     let mut data = Vec::with_capacity(length as usize);
     let mut decoder = crate::protocol::slip::Decoder::new();

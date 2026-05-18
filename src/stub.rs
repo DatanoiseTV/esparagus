@@ -80,7 +80,9 @@ fn raw_blob(name: &str) -> Result<&'static str> {
         other => {
             // Leak isn't ideal, but blob names are static strings from the
             // chip registry; nothing dynamic lands here at runtime.
-            return Err(Error::NoStubForChip(Box::leak(other.to_string().into_boxed_str())));
+            return Err(Error::NoStubForChip(Box::leak(
+                other.to_string().into_boxed_str(),
+            )));
         }
     })
 }
@@ -210,7 +212,11 @@ pub fn run(conn: &mut Connection, chip: &Chip) -> Result<StubBlob> {
     let blob = load_blob(chip, blob_name)?;
 
     if conn.stub_running {
-        info!(chip = chip.name, blob = blob_name, "stub already running, skipping upload");
+        info!(
+            chip = chip.name,
+            blob = blob_name,
+            "stub already running, skipping upload"
+        );
         conn.stub_uploaded = true;
         return Ok(blob);
     }
@@ -221,7 +227,10 @@ pub fn run(conn: &mut Connection, chip: &Chip) -> Result<StubBlob> {
         upload_segment(conn, &blob.data, blob.data_start)?;
     }
 
-    info!(entry = format_args!("{:#010x}", blob.entry), "running stub flasher");
+    info!(
+        entry = format_args!("{:#010x}", blob.entry),
+        "running stub flasher"
+    );
     mem_finish(conn, blob.entry)?;
 
     // Expect the stub to send "OHAI" (as a raw SLIP frame) once it boots.

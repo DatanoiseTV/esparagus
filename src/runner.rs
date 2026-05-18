@@ -15,11 +15,13 @@ use std::time::{Duration, Instant};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::chip::Chip;
+use crate::cli::FileCompression;
 use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
-use crate::cli::FileCompression;
 use crate::observe::{Emitter, Event, Report, ReportBuilder, ReportTransport};
-use crate::partition::{PartitionEntry, PartitionTable, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SECTOR};
+use crate::partition::{
+    PartitionEntry, PartitionTable, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SECTOR,
+};
 use crate::protocol::Connection;
 use crate::reset::{strategy_sequence, AfterMode, ResetMode};
 use crate::transport::serial::SerialTransport;
@@ -64,7 +66,10 @@ pub fn run(cli: Cli) -> i32 {
     let tool = format!("esparagus {}", env!("CARGO_PKG_VERSION"));
     let mut report = ReportBuilder::new(
         tool.clone(),
-        ReportTransport { port: port.clone(), baud },
+        ReportTransport {
+            port: port.clone(),
+            baud,
+        },
     );
 
     emitter.info(Event::RunStart {
@@ -88,7 +93,10 @@ pub fn run(cli: Cli) -> i32 {
     };
 
     let duration = report.stages.iter().map(|s| s.ms).sum::<u128>();
-    emitter.info(Event::RunComplete { ok, duration_ms: duration });
+    emitter.info(Event::RunComplete {
+        ok,
+        duration_ms: duration,
+    });
 
     let final_report = report.build(ok);
     if let Some(p) = cli.report.as_deref() {
@@ -153,21 +161,34 @@ fn handle_elf2image(
     let chip = match chip::by_name(target_chip) {
         Some(c) => c,
         None => {
-            eprintln!("error: unknown chip {:?} (supported: {:?})", target_chip, chip::names());
+            eprintln!(
+                "error: unknown chip {:?} (supported: {:?})",
+                target_chip,
+                chip::names()
+            );
             return 2;
         }
     };
     let mode = match crate::imagegen::encode_flash_mode(flash_mode) {
         Ok(m) => m,
-        Err(e) => { eprintln!("error: {}", e); return 2; }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return 2;
+        }
     };
     let freq = match crate::imagegen::encode_flash_freq(chip, flash_freq) {
         Ok(f) => f,
-        Err(e) => { eprintln!("error: {}", e); return 2; }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return 2;
+        }
     };
     let size = match crate::imagegen::encode_flash_size(flash_size) {
         Ok(s) => s,
-        Err(e) => { eprintln!("error: {}", e); return 2; }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return 2;
+        }
     };
     let params = crate::imagegen::ImageParams {
         flash_mode: mode,
@@ -180,11 +201,17 @@ fn handle_elf2image(
     };
     let elf = match std::fs::read(input) {
         Ok(b) => b,
-        Err(e) => { eprintln!("error: read {}: {}", input.display(), e); return 1; }
+        Err(e) => {
+            eprintln!("error: read {}: {}", input.display(), e);
+            return 1;
+        }
     };
     let img = match crate::imagegen::elf_to_image(&elf, &params, chip) {
         Ok(i) => i,
-        Err(e) => { eprintln!("error: {}", e); return 20; }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return 20;
+        }
     };
     if let Err(e) = std::fs::write(output, &img) {
         eprintln!("error: write {}: {}", output.display(), e);
@@ -202,7 +229,10 @@ fn handle_merge_bin(
 ) -> i32 {
     let pairs = match crate::cli::parse_write_pairs(args) {
         Ok(p) => p,
-        Err(e) => { eprintln!("error: {}", e); return 2; }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return 2;
+        }
     };
     let mut loaded: Vec<(u32, Vec<u8>)> = Vec::with_capacity(pairs.len());
     for (addr, path) in &pairs {
@@ -216,7 +246,10 @@ fn handle_merge_bin(
     }
     let merged = match crate::imagegen::merge_bin(&loaded, target_offset, target_size) {
         Ok(m) => m,
-        Err(e) => { eprintln!("error: {}", e); return 1; }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return 1;
+        }
     };
     if let Err(e) = std::fs::write(output, &merged) {
         eprintln!("error: write {}: {}", output.display(), e);
@@ -250,7 +283,11 @@ fn current_stage_name(cli: &Cli) -> String {
 }
 
 fn exit_code_for(report: &Report) -> i32 {
-    let class = report.errors.first().map(|e| e.class.as_str()).unwrap_or("");
+    let class = report
+        .errors
+        .first()
+        .map(|e| e.class.as_str())
+        .unwrap_or("");
     match class {
         "port" => 10,
         "sync_timeout" => 11,
@@ -272,9 +309,7 @@ fn run_inner(
     // --- Open port at the ROM safe rate; we'll upgrade after sync ---
     let initial_baud = SYNC_BAUD.min(baud);
     let transport = SerialTransport::open(port, initial_baud)?;
-    let vid_pid = transport
-        .usb_vid()
-        .zip(transport.usb_pid());
+    let vid_pid = transport.usb_vid().zip(transport.usb_pid());
     emitter.info(Event::TransportInfo {
         port: port.to_string(),
         usb_vid: transport.usb_vid().map(|v| format!("{:#06x}", v)),
@@ -335,7 +370,9 @@ fn run_inner(
     }
 
     if connected_strategy.is_none() {
-        let err = last_err.unwrap_or(Error::SyncTimeout { attempts: attempts_max });
+        let err = last_err.unwrap_or(Error::SyncTimeout {
+            attempts: attempts_max,
+        });
         let stage = report.finish_stage(connect_guard, false, Some(err.to_string()));
         let _ = stage;
         return Err(err);
@@ -490,7 +527,16 @@ fn run_inner(
             // Configure SPI before any write.
             ops::flash_spi_attach(&mut conn, 0)?;
             for (addr, path) in &pairs {
-                write_one(*addr, path, &mut conn, chip, emitter, report, cli.json, !cli.no_compress)?;
+                write_one(
+                    *addr,
+                    path,
+                    &mut conn,
+                    chip,
+                    emitter,
+                    report,
+                    cli.json,
+                    !cli.no_compress,
+                )?;
             }
         }
         Command::ReadFlash {
@@ -551,15 +597,11 @@ fn run_inner(
             }
         }
 
-        Command::WritePartition {
-            name,
-            table,
-            file,
-        } => {
+        Command::WritePartition { name, table, file } => {
             let pt = load_partition_table(&mut conn, table.as_deref(), emitter)?;
-            let entry = pt.find(name).ok_or_else(|| {
-                Error::Other(format!("no partition named {:?} in table", name))
-            })?;
+            let entry = pt
+                .find(name)
+                .ok_or_else(|| Error::Other(format!("no partition named {:?} in table", name)))?;
             emit_resolved(emitter, entry);
             let (bytes, _hdr) = image::load_payload(file)?;
             if bytes.len() as u32 > entry.size {
@@ -589,9 +631,9 @@ fn run_inner(
             output,
         } => {
             let pt = load_partition_table(&mut conn, table.as_deref(), emitter)?;
-            let entry = pt.find(name).ok_or_else(|| {
-                Error::Other(format!("no partition named {:?} in table", name))
-            })?;
+            let entry = pt
+                .find(name)
+                .ok_or_else(|| Error::Other(format!("no partition named {:?} in table", name)))?;
             emit_resolved(emitter, entry);
             let g = report.start_stage(format!("read_partition {}", entry.name));
             emitter.info(Event::ReadBegin {
@@ -625,9 +667,9 @@ fn run_inner(
 
         Command::ErasePartition { name, table } => {
             let pt = load_partition_table(&mut conn, table.as_deref(), emitter)?;
-            let entry = pt.find(name).ok_or_else(|| {
-                Error::Other(format!("no partition named {:?} in table", name))
-            })?;
+            let entry = pt
+                .find(name)
+                .ok_or_else(|| Error::Other(format!("no partition named {:?} in table", name)))?;
             emit_resolved(emitter, entry);
             let g = report.start_stage(format!("erase_partition {}", entry.name));
             emitter.info(Event::EraseBegin {
@@ -644,7 +686,11 @@ fn run_inner(
             report.finish_stage(g, true, None);
         }
 
-        Command::Backup { output, size, compress } => {
+        Command::Backup {
+            output,
+            size,
+            compress,
+        } => {
             let resolved_size = match size {
                 Some(s) => *s,
                 None => {
@@ -786,12 +832,7 @@ fn load_partition_table(
         }
         None => {
             // Read PARTITION_TABLE_SECTOR (4 KB) from flash at 0x8000.
-            let raw = ops::read_flash(
-                conn,
-                PARTITION_TABLE_OFFSET,
-                PARTITION_TABLE_SECTOR,
-                None,
-            )?;
+            let raw = ops::read_flash(conn, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SECTOR, None)?;
             let table = PartitionTable::from_binary(&raw)?;
             table.validate()?;
             emitter.info(Event::PartitionTableLoaded {
@@ -851,7 +892,11 @@ fn write_payload(
             if let Some(b) = bar.as_ref() {
                 b.set_position(written);
             }
-            let pct = if total == 0 { 100 } else { (written * 100 / total) as u32 };
+            let pct = if total == 0 {
+                100
+            } else {
+                (written * 100 / total) as u32
+            };
             if pct >= last_pct + 5 || pct == 100 {
                 last_pct = pct;
                 emit_for_progress.info(Event::WriteProgress {
@@ -881,12 +926,11 @@ fn write_payload(
 
 fn resolve_file_gz(mode: FileCompression, path: &Path) -> bool {
     match mode {
-        FileCompression::Auto => {
-            path.extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("gz"))
-                .unwrap_or(false)
-        }
+        FileCompression::Auto => path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("gz"))
+            .unwrap_or(false),
         FileCompression::Gz => true,
         FileCompression::None => false,
     }
@@ -984,7 +1028,11 @@ fn write_one(
             if let Some(b) = bar.as_ref() {
                 b.set_position(written);
             }
-            let pct = if total == 0 { 100 } else { (written * 100 / total) as u32 };
+            let pct = if total == 0 {
+                100
+            } else {
+                (written * 100 / total) as u32
+            };
             if pct >= last_pct + 5 || pct == 100 {
                 last_pct = pct;
                 emit_for_progress.info(Event::WriteProgress {

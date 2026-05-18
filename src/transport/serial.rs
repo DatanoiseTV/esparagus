@@ -83,9 +83,9 @@ impl Transport for SerialTransport {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         match self.port.read(buf) {
             Ok(n) => Ok(n),
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                Err(Error::Io(std::io::Error::from(std::io::ErrorKind::TimedOut)))
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Err(Error::Io(
+                std::io::Error::from(std::io::ErrorKind::TimedOut),
+            )),
             Err(e) => Err(Error::Io(e)),
         }
     }

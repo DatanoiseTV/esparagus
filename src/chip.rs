@@ -415,9 +415,9 @@ pub const CHIP_DETECT_MAGIC_REG_ADDR: u32 = 0x40001000;
 /// either "esp32-s3" or "esp32s3").
 pub fn by_name(name: &str) -> Option<&'static Chip> {
     let want = name.to_ascii_lowercase().replace('-', "");
-    REGISTRY.iter().find(|c| {
-        c.name.to_ascii_lowercase().replace('-', "") == want
-    })
+    REGISTRY
+        .iter()
+        .find(|c| c.name.to_ascii_lowercase().replace('-', "") == want)
 }
 
 /// Look up a chip by its IMAGE_CHIP_ID (returned by GET_SECURITY_INFO).
@@ -448,12 +448,8 @@ pub fn detect(conn: &mut crate::protocol::Connection) -> Result<&'static Chip> {
         // 20-byte payload (newer) or 12-byte (S2). chip_id is bytes 12..16 in
         // the 20-byte payload.
         if resp.data.len() >= 20 {
-            let chip_id = u32::from_le_bytes([
-                resp.data[12],
-                resp.data[13],
-                resp.data[14],
-                resp.data[15],
-            ]);
+            let chip_id =
+                u32::from_le_bytes([resp.data[12], resp.data[13], resp.data[14], resp.data[15]]);
             if let Some(c) = by_image_chip_id(chip_id) {
                 return Ok(c);
             }

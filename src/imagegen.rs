@@ -54,9 +54,9 @@ pub struct ImageParams {
 impl Default for ImageParams {
     fn default() -> Self {
         Self {
-            flash_mode: 2,    // DIO — safe default
-            flash_freq: 0,    // 40 MHz on most chips
-            flash_size: 2,    // 4 MB — sane default
+            flash_mode: 2, // DIO — safe default
+            flash_freq: 0, // 40 MHz on most chips
+            flash_size: 2, // 4 MB — sane default
             min_rev: 0,
             min_rev_full: 0,
             max_rev_full: 0xFFFF,
@@ -143,7 +143,9 @@ pub fn parse_elf32_le(bytes: &[u8]) -> Result<(u32, Vec<ElfSegment>)> {
     }
     if bytes[4] != 1 {
         // 1 = ELFCLASS32, 2 = ELFCLASS64
-        return Err(Error::Other("only 32-bit ELF (Xtensa/RISC-V) supported".into()));
+        return Err(Error::Other(
+            "only 32-bit ELF (Xtensa/RISC-V) supported".into(),
+        ));
     }
     if bytes[5] != 1 {
         return Err(Error::Other("only little-endian ELF supported".into()));
@@ -405,10 +407,10 @@ mod tests {
         let img = build_image(0x40380000, &segs, &ImageParams::default(), chip).unwrap();
         assert_eq!(img[0], ESP_IMAGE_MAGIC);
         assert_eq!(img[1], 1); // segment count
-        // Layout: 24-byte header + 8-byte seg header + 4-byte data + pad +
-        // 1-byte checksum + 32-byte SHA256.  Header+seghdr+data = 36; needs
-        // 11 pad bytes to reach 47, +1 checksum = 48 (multiple of 16). Plus
-        // SHA256 = 80 bytes total.
+                               // Layout: 24-byte header + 8-byte seg header + 4-byte data + pad +
+                               // 1-byte checksum + 32-byte SHA256.  Header+seghdr+data = 36; needs
+                               // 11 pad bytes to reach 47, +1 checksum = 48 (multiple of 16). Plus
+                               // SHA256 = 80 bytes total.
         assert_eq!(img.len(), 80);
         // Checksum byte = init ^ data[0] ^ ... = 0xEF^0x01^0x02^0x03^0x04
         let expected_chk = CHECKSUM_MAGIC ^ 0x01 ^ 0x02 ^ 0x03 ^ 0x04;
@@ -423,7 +425,7 @@ mod tests {
         bytes[4] = 1; // ELFCLASS32
         bytes[5] = 1; // little-endian
         bytes[6] = 1; // ELF version
-        // e_entry @ 24..28
+                      // e_entry @ 24..28
         LittleEndian::write_u32(&mut bytes[24..28], 0x40380000);
         // e_phoff = 52 (right after ELF header)
         LittleEndian::write_u32(&mut bytes[28..32], 52);

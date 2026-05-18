@@ -8,8 +8,8 @@
 //!   * UsbJtagSerialReset — native USB-Serial/JTAG on ESP32-S3/C3/C6/H2
 //!   * HardReset — EN pulse to restart the chip into application code
 
-use std::time::Duration;
 use std::thread::sleep;
+use std::time::Duration;
 
 use crate::error::Result;
 use crate::transport::Transport;
@@ -80,13 +80,13 @@ pub fn classic_reset(transport: &mut dyn Transport, reset_delay: Duration) -> Re
     run(
         transport,
         &[
-            Step::Dtr(false),                 // IO0=HIGH
-            Step::Rts(true),                  // EN=LOW (chip in reset)
+            Step::Dtr(false), // IO0=HIGH
+            Step::Rts(true),  // EN=LOW (chip in reset)
             Step::Wait(Duration::from_millis(100)),
-            Step::Dtr(true),                  // IO0=LOW
-            Step::Rts(false),                 // EN=HIGH (out of reset)
+            Step::Dtr(true),  // IO0=LOW
+            Step::Rts(false), // EN=HIGH (out of reset)
             Step::Wait(reset_delay),
-            Step::Dtr(false),                 // IO0=HIGH (done)
+            Step::Dtr(false), // IO0=HIGH (done)
         ],
     )
 }
@@ -101,12 +101,12 @@ pub fn unix_tight_reset(transport: &mut dyn Transport, reset_delay: Duration) ->
         &[
             Step::DtrRts(false, false),
             Step::DtrRts(true, true),
-            Step::DtrRts(false, true),        // IO0=HIGH & EN=LOW, in reset
+            Step::DtrRts(false, true), // IO0=HIGH & EN=LOW, in reset
             Step::Wait(Duration::from_millis(100)),
-            Step::DtrRts(true, false),        // IO0=LOW & EN=HIGH, out of reset
+            Step::DtrRts(true, false), // IO0=LOW & EN=HIGH, out of reset
             Step::Wait(reset_delay),
-            Step::DtrRts(false, false),       // IO0=HIGH (done)
-            Step::Dtr(false),                 // some envs need this re-asserted
+            Step::DtrRts(false, false), // IO0=HIGH (done)
+            Step::Dtr(false),           // some envs need this re-asserted
         ],
     )
 }
@@ -118,17 +118,17 @@ pub fn usb_jtag_serial_reset(transport: &mut dyn Transport) -> Result<()> {
         transport,
         &[
             Step::Rts(false),
-            Step::Dtr(false),                 // idle
+            Step::Dtr(false), // idle
             Step::Wait(Duration::from_millis(100)),
-            Step::Dtr(true),                  // IO0
+            Step::Dtr(true), // IO0
             Step::Rts(false),
             Step::Wait(Duration::from_millis(100)),
-            Step::Rts(true),                  // reset; (1,1) path
+            Step::Rts(true), // reset; (1,1) path
             Step::Dtr(false),
-            Step::Rts(true),                  // Windows propagates DTR on RTS set
+            Step::Rts(true), // Windows propagates DTR on RTS set
             Step::Wait(Duration::from_millis(100)),
             Step::Dtr(false),
-            Step::Rts(false),                 // out of reset
+            Step::Rts(false), // out of reset
         ],
     )
 }
@@ -152,10 +152,7 @@ pub fn hard_reset(transport: &mut dyn Transport, uses_usb: bool) -> Result<()> {
 /// Each entry has a delay value used by `classic_reset` / `unix_tight_reset`.
 ///
 /// Upstream esptool tries 4 variants on Unix and 2 on Windows; we mirror that.
-pub fn strategy_sequence(
-    mode: ResetMode,
-    vid_pid: Option<(u16, u16)>,
-) -> Vec<ResetAttempt> {
+pub fn strategy_sequence(mode: ResetMode, vid_pid: Option<(u16, u16)>) -> Vec<ResetAttempt> {
     if matches!(mode, ResetMode::NoReset | ResetMode::NoResetNoSync) {
         return vec![ResetAttempt::NoOp];
     }

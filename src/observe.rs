@@ -170,12 +170,7 @@ struct EmitterInner {
 impl Emitter {
     pub fn new(json_stdout: bool, log_file: Option<&Path>) -> std::io::Result<Self> {
         let file = match log_file {
-            Some(p) => Some(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(p)?,
-            ),
+            Some(p) => Some(OpenOptions::new().create(true).append(true).open(p)?),
             None => None,
         };
         Ok(Self {
@@ -229,10 +224,16 @@ impl Clone for Emitter {
 
 fn human(e: &LoggedEvent) -> String {
     match &e.event {
-        Event::RunStart { tool, port, baud, .. } => {
+        Event::RunStart {
+            tool, port, baud, ..
+        } => {
             format!("[{}] {} starting on {} @ {}", e.ts, tool, port, baud)
         }
-        Event::TransportInfo { port, usb_vid, usb_pid } => format!(
+        Event::TransportInfo {
+            port,
+            usb_vid,
+            usb_pid,
+        } => format!(
             "[{}] transport {} vid={} pid={}",
             e.ts,
             port,
@@ -243,7 +244,10 @@ fn human(e: &LoggedEvent) -> String {
             format!("[{}] connect {} (attempt {})", e.ts, strategy, attempt)
         }
         Event::Connected { strategy, attempts } => {
-            format!("[{}] connected via {} after {} attempt(s)", e.ts, strategy, attempts)
+            format!(
+                "[{}] connected via {} after {} attempt(s)",
+                e.ts, strategy, attempts
+            )
         }
         Event::ChipDetected { chip, chip_id } => {
             format!("[{}] detected {} (chip_id={})", e.ts, chip, chip_id)
@@ -255,7 +259,11 @@ fn human(e: &LoggedEvent) -> String {
             "[{}] stub {} running on {} (entry {})",
             e.ts, blob, chip, entry
         ),
-        Event::FlashIdRead { manufacturer, device, size_mb } => format!(
+        Event::FlashIdRead {
+            manufacturer,
+            device,
+            size_mb,
+        } => format!(
             "[{}] flash id: mfr={} dev={} size={}MB",
             e.ts,
             manufacturer,
@@ -263,11 +271,20 @@ fn human(e: &LoggedEvent) -> String {
             size_mb.map(|v| v.to_string()).unwrap_or_else(|| "?".into())
         ),
         Event::MacRead { mac } => format!("[{}] MAC {}", e.ts, mac),
-        Event::WriteBegin { addr, size, compressed } => format!(
+        Event::WriteBegin {
+            addr,
+            size,
+            compressed,
+        } => format!(
             "[{}] writing {} bytes at {} (compressed={})",
             e.ts, size, addr, compressed
         ),
-        Event::WriteProgress { addr, written, total, pct } => format!(
+        Event::WriteProgress {
+            addr,
+            written,
+            total,
+            pct,
+        } => format!(
             "[{}]   {}: {} / {} ({:.1}%)",
             e.ts, addr, written, total, pct
         ),
@@ -289,7 +306,13 @@ fn human(e: &LoggedEvent) -> String {
         Event::PartitionTableLoaded { source, count } => {
             format!("[{}] partition table {} ({} entries)", e.ts, source, count)
         }
-        Event::PartitionResolved { name, ptype, subtype, offset, size } => format!(
+        Event::PartitionResolved {
+            name,
+            ptype,
+            subtype,
+            offset,
+            size,
+        } => format!(
             "[{}] partition {} type={}/{} @ {} ({} bytes)",
             e.ts, name, ptype, subtype, offset, size
         ),
@@ -302,7 +325,11 @@ fn human(e: &LoggedEvent) -> String {
             format!("[{}] restore done {} bytes md5={}", e.ts, size, md5)
         }
         Event::Warning { message } => format!("[{}] WARN: {}", e.ts, message),
-        Event::Error { stage, class, detail } => {
+        Event::Error {
+            stage,
+            class,
+            detail,
+        } => {
             format!("[{}] ERROR {}/{}: {}", e.ts, stage, class, detail)
         }
         Event::RunComplete { ok, duration_ms } => format!(

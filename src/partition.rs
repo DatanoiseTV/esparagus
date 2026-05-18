@@ -294,9 +294,8 @@ fn parse_type(s: &str) -> Result<u8> {
         "data" => TYPE_DATA,
         "bootloader" => TYPE_BOOTLOADER,
         "partition_table" => TYPE_PARTITION_TABLE,
-        other => parse_int_u8(other).map_err(|e| {
-            Error::Other(format!("unknown partition type {:?}: {}", other, e))
-        })?,
+        other => parse_int_u8(other)
+            .map_err(|e| Error::Other(format!("unknown partition type {:?}: {}", other, e)))?,
     })
 }
 
@@ -336,14 +335,16 @@ fn parse_subtype(ptype: u8, s: &str) -> Result<u8> {
         (TYPE_DATA, "littlefs") => DATA_LITTLEFS,
         (TYPE_DATA, "tee_ota") => DATA_TEE_OTA,
         (_, other) => parse_int_u8(other).map_err(|e| {
-            Error::Other(format!("unknown subtype {:?} for type {}: {}", other, ptype, e))
+            Error::Other(format!(
+                "unknown subtype {:?} for type {}: {}",
+                other, ptype, e
+            ))
         })?,
     })
 }
 
 fn parse_offset(s: &str) -> Result<u32> {
-    parse_int_u32(s.trim())
-        .map_err(|e| Error::Other(format!("bad offset {:?}: {}", s, e)))
+    parse_int_u32(s.trim()).map_err(|e| Error::Other(format!("bad offset {:?}: {}", s, e)))
 }
 
 fn parse_size(s: &str) -> Result<u32> {
@@ -358,8 +359,8 @@ fn parse_size(s: &str) -> Result<u32> {
     } else {
         (s, 1)
     };
-    let base = parse_int_u32(num_str)
-        .map_err(|e| Error::Other(format!("bad size {:?}: {}", s, e)))?;
+    let base =
+        parse_int_u32(num_str).map_err(|e| Error::Other(format!("bad size {:?}: {}", s, e)))?;
     base.checked_mul(mult)
         .ok_or_else(|| Error::Other(format!("size overflow: {:?}", s)))
 }
@@ -416,10 +417,7 @@ ota_1,    app,  ota_1,   ,        1M,
         // ota_0 auto-allocated right after factory @ 0x10000 + 1MB = 0x110000
         assert_eq!(table.find("ota_0").unwrap().offset, 0x110000);
         assert_eq!(table.find("ota_1").unwrap().offset, 0x210000);
-        assert_eq!(
-            table.find("nvs").unwrap().subtype,
-            DATA_NVS
-        );
+        assert_eq!(table.find("nvs").unwrap().subtype, DATA_NVS);
         table.validate().unwrap();
     }
 
