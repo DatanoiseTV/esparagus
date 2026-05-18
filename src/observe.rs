@@ -128,6 +128,40 @@ pub enum Event {
         size: u64,
         md5: String,
     },
+    MonitorStart {
+        port: String,
+        baud: u32,
+        timeout_secs: u64,
+        expect: Vec<String>,
+        expect_not: Vec<String>,
+    },
+    SerialLine {
+        line: String,
+    },
+    ExpectMatch {
+        kind: &'static str, // "positive" or "negative"
+        pattern: String,
+        line: String,
+    },
+    MonitorTimeout {
+        lines_seen: u64,
+        bytes_seen: u64,
+    },
+    MonitorComplete {
+        reason: &'static str, // "expect_match" | "expect_not_match" | "timeout" | "crash" | "interrupted"
+        duration_ms: u128,
+        lines_seen: u64,
+        bytes_seen: u64,
+    },
+    CrashDetected {
+        kind: &'static str, // "panic" | "wdt" | "abort" | "assert" | "stack_smash" | "exception" | "cache"
+        pattern: String,
+        line: String,
+    },
+    CrashContext {
+        kind: &'static str,
+        lines: Vec<String>,
+    },
     Warning {
         message: String,
     },
@@ -324,6 +358,57 @@ fn human(e: &LoggedEvent) -> String {
         Event::RestoreDone { size, md5 } => {
             format!("[{}] restore done {} bytes md5={}", e.ts, size, md5)
         }
+        Event::MonitorStart {
+            port,
+            baud,
+            timeout_secs,
+            expect,
+            expect_not,
+        } => format!(
+            "[{}] monitor {} @ {} (timeout {}s, expect {:?}, expect_not {:?})",
+            e.ts, port, baud, timeout_secs, expect, expect_not
+        ),
+        Event::SerialLine { line } => line.clone(),
+        Event::ExpectMatch {
+            kind,
+            pattern,
+            line,
+        } => {
+            format!("[{}] {} match {:?} on line: {}", e.ts, kind, pattern, line)
+        }
+        Event::MonitorTimeout {
+            lines_seen,
+            bytes_seen,
+        } => format!(
+            "[{}] monitor timeout ({} lines, {} bytes)",
+            e.ts, lines_seen, bytes_seen
+        ),
+        Event::MonitorComplete {
+            reason,
+            duration_ms,
+            lines_seen,
+            bytes_seen,
+        } => format!(
+            "[{}] monitor complete ({}) {}ms / {} lines / {} bytes",
+            e.ts, reason, duration_ms, lines_seen, bytes_seen
+        ),
+        Event::CrashDetected {
+            kind,
+            pattern,
+            line,
+        } => {
+            format!(
+                "[{}] !! CRASH ({}) matched {:?}: {}",
+                e.ts, kind, pattern, line
+            )
+        }
+        Event::CrashContext { kind, lines } => format!(
+            "[{}] crash context ({}, {} lines):\n{}",
+            e.ts,
+            kind,
+            lines.len(),
+            lines.join("\n")
+        ),
         Event::Warning { message } => format!("[{}] WARN: {}", e.ts, message),
         Event::Error {
             stage,

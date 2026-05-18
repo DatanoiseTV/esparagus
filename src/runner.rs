@@ -18,6 +18,7 @@ use crate::chip::Chip;
 use crate::cli::FileCompression;
 use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
+use crate::monitor as monitor_mod;
 use crate::observe::{Emitter, Event, Report, ReportBuilder, ReportTransport};
 use crate::partition::{
     PartitionEntry, PartitionTable, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SECTOR,
@@ -53,6 +54,30 @@ pub fn run(cli: Cli) -> i32 {
             return 2;
         }
     };
+
+    // Monitor needs the port but bypasses the entire sync/detect/stub flow
+    // (we explicitly do NOT want to enter the ROM bootloader — we want the
+    // chip running its firmware).
+    if let Command::Monitor {
+        timeout,
+        expect,
+        expect_not,
+        no_reset,
+        no_crash_detect,
+    } = &cli.command
+    {
+        return run_monitor(
+            &port,
+            cli.baud,
+            *timeout,
+            expect,
+            expect_not,
+            *no_reset,
+            *no_crash_detect,
+            cli.json,
+            cli.log_file.as_deref(),
+        );
+    }
     let baud = cli.baud;
 
     let emitter = match Emitter::new(cli.json, cli.log_file.as_deref()) {
@@ -108,6 +133,64 @@ pub fn run(cli: Cli) -> i32 {
         0
     } else {
         exit_code_for(&final_report)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_monitor(
+    port: &str,
+    baud: u32,
+    timeout_secs: u64,
+    expect: &[String],
+    expect_not: &[String],
+    no_reset: bool,
+    no_crash_detect: bool,
+    json: bool,
+    log_file: Option<&Path>,
+) -> i32 {
+    let emitter = match Emitter::new(json, log_file) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: could not open --log-file: {}", e);
+            return 2;
+        }
+    };
+    // Human mode = print decoded serial lines directly to stdout.
+    let print_raw = !json;
+    match monitor_mod::run(
+        port,
+        baud,
+        std::time::Duration::from_secs(timeout_secs),
+        expect,
+        expect_not,
+        no_reset,
+        no_crash_detect,
+        &emitter,
+        print_raw,
+    ) {
+        Ok(monitor_mod::Outcome::ExpectMatch) => 0,
+        Ok(monitor_mod::Outcome::ExpectNotMatch) => 30,
+        Ok(monitor_mod::Outcome::Timeout) => {
+            // With no patterns the timeout is the natural exit and not a
+            // failure — match a `cat /dev/tty` mental model.
+            if expect.is_empty() && expect_not.is_empty() {
+                0
+            } else {
+                31
+            }
+        }
+        Ok(monitor_mod::Outcome::Crash) => 32,
+        Err(e) => {
+            emitter.error(Event::Error {
+                stage: "monitor".into(),
+                class: e.class().into(),
+                detail: e.to_string(),
+            });
+            match e.class() {
+                "port" => 10,
+                _ => 1,
+            }
+        }
     }
 }
 
@@ -278,6 +361,7 @@ fn current_stage_name(cli: &Cli) -> String {
         // Offline commands handled before we get here.
         Command::Elf2Image { .. } => "elf2image",
         Command::MergeBin { .. } => "merge_bin",
+        Command::Monitor { .. } => "monitor",
     }
     .into()
 }
@@ -733,10 +817,12 @@ fn run_inner(
             *report.stages.last_mut().unwrap() = stage;
         }
 
-        Command::Elf2Image { .. } | Command::MergeBin { .. } => {
-            // These are dispatched by run_offline_if_applicable before we
-            // ever open a port; reaching here would be a logic bug.
-            unreachable!("offline command leaked into chip-connect path")
+        Command::Elf2Image { .. } | Command::MergeBin { .. } | Command::Monitor { .. } => {
+            // These are dispatched before we ever open a port for the
+            // protocol flow (offline ones via run_offline_if_applicable,
+            // monitor via its own branch in run()); reaching here would
+            // be a logic bug.
+            unreachable!("offline / monitor command leaked into chip-connect path")
         }
 
         Command::Restore { input } => {

@@ -213,6 +213,34 @@ pub enum Command {
         no_hash: bool,
     },
 
+    /// Open a serial monitor on the chip's UART/USB-CDC and watch the
+    /// output for expected/forbidden patterns.  GNU-expect-style: the
+    /// command exits 0 on first --expect match, 30 on first --expect-not
+    /// match, or 31 on timeout.  Designed to chain after `write-flash`
+    /// in a CI / LLM feedback loop.
+    Monitor {
+        /// Hard ceiling on total monitor time. 0 = run forever.
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+        /// Success pattern (regex). Repeatable; any match exits 0.
+        #[arg(long = "expect")]
+        expect: Vec<String>,
+        /// Failure pattern (regex). Repeatable; any match exits 30.
+        #[arg(long = "expect-not")]
+        expect_not: Vec<String>,
+        /// Don't hard-reset before listening. By default we pulse EN so
+        /// the chip starts its boot output from byte 0.
+        #[arg(long)]
+        no_reset: bool,
+        /// Disable automatic detection of ESP panic / watchdog / assert
+        /// output. By default the monitor recognises Guru Meditation,
+        /// task watchdog, abort, assert, stack-smashing, and the common
+        /// CPU exceptions, captures the surrounding backtrace into a
+        /// crash_context event, and exits 32.
+        #[arg(long)]
+        no_crash_detect: bool,
+    },
+
     /// Merge multiple binaries into one padded image (offline; no chip
     /// needed). Useful for building a complete flash image (bootloader +
     /// partition table + app + ...) for distribution.

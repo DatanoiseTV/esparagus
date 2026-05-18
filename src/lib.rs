@@ -8,6 +8,7 @@ pub mod cli;
 pub mod error;
 pub mod image;
 pub mod imagegen;
+pub mod monitor;
 pub mod observe;
 pub mod ops;
 pub mod partition;
