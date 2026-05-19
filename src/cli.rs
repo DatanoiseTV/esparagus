@@ -92,6 +92,20 @@ pub enum Command {
     /// Read SPI flash JEDEC ID (manufacturer + device).
     FlashId,
 
+    /// Read EFUSE: dump the BLOCK0-1 region as 32-bit words, plus
+    /// decoded common fields (BASE_MAC, chip revision). EFUSE *burn*
+    /// is intentionally not implemented (one-way fuses; out of scope
+    /// for the v1 release — use `espefuse.py` for burning).
+    #[command(name = "read-efuse", alias = "efuse-read", alias = "efuse_read")]
+    ReadEfuse {
+        /// How many 32-bit words to dump starting from EFUSE_BASE.
+        /// Default 64 (256 bytes) covers BLOCK0 + BLOCK1 on every
+        /// supported chip. The EFUSE peripheral is memory-mapped and
+        /// the unused window beyond the implemented blocks reads as 0.
+        #[arg(long, default_value_t = 64)]
+        words: u32,
+    },
+
     /// Erase the entire flash chip (stub required).
     EraseFlash,
 
@@ -271,6 +285,20 @@ pub enum Command {
     /// port between MCP calls.
     Mcp,
 
+    /// Print a shell-completion script to stdout. Pipe into the
+    /// shell's completion-loading directory, e.g.
+    ///   esparagus completions zsh > ~/.zfunc/_esparagus
+    ///   esparagus completions bash > /usr/local/etc/bash_completion.d/esparagus
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+
+    /// Print a roff(7)-formatted man page to stdout. Save as
+    /// `esparagus.1` under your manpath, e.g.
+    ///   esparagus man > /usr/local/share/man/man1/esparagus.1
+    Man,
+
     /// Open a serial monitor on the chip's UART/USB-CDC and watch the
     /// output for expected/forbidden patterns.  GNU-expect-style: the
     /// command exits 0 on first --expect match, 30 on first --expect-not
@@ -304,21 +332,46 @@ pub enum Command {
     /// partition table + app + ...) for distribution.
     #[command(name = "merge-bin")]
     MergeBin {
-        /// Output .bin path.
+        /// Output path (`.bin` for raw, `.uf2` for uf2).
         #[arg(long, short = 'o')]
         output: PathBuf,
-        /// Pad output to this size (bytes; hex prefix accepted).
+        /// Pad output to this size (bytes; hex prefix accepted). Only
+        /// applies to `--format raw`; ignored for UF2 (which is a
+        /// per-block stream and has no overall size).
         #[arg(long, value_parser = parse_u32)]
         target_size: Option<u32>,
         /// Subtract this offset from each piece's address (so the result
-        /// starts at offset 0 of the file). Default 0.
+        /// starts at offset 0 of the file). Default 0. Only meaningful
+        /// for `--format raw`; ignored for UF2 (each file carries its
+        /// own absolute load address).
         #[arg(long, default_value_t = 0, value_parser = parse_u32)]
         target_offset: u32,
+        /// Output format: `raw` (concatenated padded .bin — the default,
+        /// matches upstream `esptool merge-bin`), or `uf2` (Microsoft
+        /// UF2 container, suitable for drag-and-drop bootloaders).
+        #[arg(long, value_enum, default_value_t = MergeFormat::Raw)]
+        format: MergeFormat,
+        /// Target chip name (required for `--format uf2` to select the
+        /// UF2 family ID). Ignored for raw.
+        #[arg(long)]
+        chip: Option<String>,
+        /// Omit the per-block MD5 footer (UF2 spec extension). On by
+        /// default; clear if your bootloader rejects unknown UF2 flags.
+        #[arg(long)]
+        no_md5: bool,
         /// Pairs of (address, file). Example:
         ///   0x0 bootloader.bin 0x8000 partitions.bin 0x10000 app.bin
         #[arg(required = true, num_args = 2..)]
         args: Vec<String>,
     },
+}
+
+#[derive(Copy, Clone, Debug, clap::ValueEnum)]
+pub enum MergeFormat {
+    /// Concatenated padded .bin matching upstream `esptool merge-bin`.
+    Raw,
+    /// Microsoft UF2 container (https://github.com/microsoft/uf2).
+    Uf2,
 }
 
 #[derive(Subcommand, Debug, Clone)]

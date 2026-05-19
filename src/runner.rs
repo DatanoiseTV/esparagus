@@ -54,6 +54,25 @@ pub fn run(cli: Cli) -> i32 {
     if matches!(cli.command, Command::Mcp) {
         return crate::mcp::run();
     }
+    // `completions` and `man` are pure code-generation: no port, no chip.
+    if let Command::Completions { shell } = cli.command {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let name = cmd.get_name().to_string();
+        clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+        return 0;
+    }
+    if matches!(cli.command, Command::Man) {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        match clap_mangen::Man::new(cmd).render(&mut std::io::stdout()) {
+            Ok(()) => return 0,
+            Err(e) => {
+                eprintln!("error: failed to render man page: {e}");
+                return 1;
+            }
+        }
+    }
     // Required port for everything but `--help` and `--version`, which clap
     // handles itself. If --port is missing AND exactly one ESP-like
     // candidate is found on the system, auto-select it; otherwise list the
@@ -331,8 +350,19 @@ fn run_offline_if_applicable(cli: &Cli) -> Option<i32> {
             output,
             target_size,
             target_offset,
+            format,
+            chip,
+            no_md5,
             args,
-        } => Some(handle_merge_bin(output, *target_size, *target_offset, args)),
+        } => Some(handle_merge_bin(
+            output,
+            *target_size,
+            *target_offset,
+            *format,
+            chip.as_deref(),
+            *no_md5,
+            args,
+        )),
         _ => None,
     }
 }
@@ -412,10 +442,14 @@ fn handle_elf2image(
     0
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_merge_bin(
     output: &Path,
     target_size: Option<u32>,
     target_offset: u32,
+    format: crate::cli::MergeFormat,
+    chip: Option<&str>,
+    no_md5: bool,
     args: &[String],
 ) -> i32 {
     let pairs = match crate::cli::parse_write_pairs(args) {
@@ -435,11 +469,44 @@ fn handle_merge_bin(
             }
         }
     }
-    let merged = match crate::imagegen::merge_bin(&loaded, target_offset, target_size) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("error: {}", e);
-            return 1;
+    let merged = match format {
+        crate::cli::MergeFormat::Raw => {
+            match crate::imagegen::merge_bin(&loaded, target_offset, target_size) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    return 1;
+                }
+            }
+        }
+        crate::cli::MergeFormat::Uf2 => {
+            let chip_name = match chip {
+                Some(c) => c,
+                None => {
+                    eprintln!(
+                        "error: --chip <name> is required for --format uf2 \
+                         (selects the UF2 family ID)"
+                    );
+                    return 2;
+                }
+            };
+            let family_id = match crate::imagegen::uf2_family_id(chip_name) {
+                Some(id) => id,
+                None => {
+                    eprintln!(
+                        "error: no UF2 family ID registered for chip {:?}",
+                        chip_name
+                    );
+                    return 2;
+                }
+            };
+            match crate::imagegen::merge_uf2(&loaded, family_id, !no_md5) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    return 1;
+                }
+            }
         }
     };
     if let Err(e) = std::fs::write(output, &merged) {
@@ -455,6 +522,7 @@ fn current_stage_name(cli: &Cli) -> String {
         Command::Detect => "detect",
         Command::ReadMac => "read_mac",
         Command::FlashId => "flash_id",
+        Command::ReadEfuse { .. } => "read_efuse",
         Command::EraseFlash => "erase_flash",
         Command::EraseRegion { .. } => "erase_region",
         Command::WriteFlash { .. } => "write_flash",
@@ -474,6 +542,8 @@ fn current_stage_name(cli: &Cli) -> String {
         Command::FlashMonitor { .. } => "flash_monitor",
         Command::ListPorts => "list_ports",
         Command::Mcp => "mcp",
+        Command::Completions { .. } => "completions",
+        Command::Man => "man",
     }
     .into()
 }
@@ -712,6 +782,38 @@ fn run_inner(
                 manufacturer: format!("{:#04x}", mfr),
                 device: format!("{:#06x}", dev),
                 size_mb: ops::flash_size_mb_from_id(id),
+            });
+        }
+        Command::ReadEfuse { words } => {
+            // Cap at 256 words (1 KB) — the unused part of the EFUSE
+            // peripheral window reads as 0 / "all-ones" depending on
+            // chip; nothing useful is past block 4 on any current
+            // target, and a longer read just wastes round-trips.
+            let n = (*words).min(256);
+            let mut buf: Vec<u32> = Vec::with_capacity(n as usize);
+            for i in 0..n {
+                let addr = chip.efuse_base + 4 * i;
+                buf.push(conn.read_reg(addr)?);
+            }
+            let mac = ops::read_mac(&mut conn, chip)?;
+            let chip_rev = match chip.name {
+                "ESP32-P4" => {
+                    let word = conn.read_reg(chip.efuse_block1_addr + 4 * 2)?;
+                    let minor = word & 0x0F;
+                    let major = (((word >> 23) & 1) << 2) | ((word >> 4) & 0x03);
+                    format!("{}.{:02}", major, minor)
+                }
+                // Other chips have chip-rev bits at different EFUSE
+                // positions; full per-chip decoding is future work
+                // (esparagus 0.2+). For now we emit the raw words so
+                // a caller who knows their target can decode locally.
+                _ => "?".into(),
+            };
+            emitter.info(Event::EfuseRead {
+                mac: ops::format_mac(&mac),
+                chip_rev,
+                base: format!("{:#010x}", chip.efuse_base),
+                words: buf,
             });
         }
         Command::EraseFlash => {
@@ -996,7 +1098,9 @@ fn run_inner(
         | Command::Monitor { .. }
         | Command::FlashMonitor { .. }
         | Command::ListPorts
-        | Command::Mcp => {
+        | Command::Mcp
+        | Command::Completions { .. }
+        | Command::Man => {
             // These are dispatched before we ever open a port for the
             // protocol flow (offline ones via run_offline_if_applicable,
             // monitor + flash-monitor via their own branches in run());
@@ -1101,6 +1205,7 @@ fn should_use_stub(cmd: &Command) -> bool {
         | Command::Detect
         | Command::ReadMac
         | Command::FlashId
+        | Command::ReadEfuse { .. }
         | Command::Partitions { .. }
         | Command::WritePartition { .. }
         | Command::ReadPartition { .. }

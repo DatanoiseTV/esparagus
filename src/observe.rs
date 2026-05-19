@@ -62,6 +62,19 @@ pub enum Event {
     MacRead {
         mac: String,
     },
+    EfuseRead {
+        /// Decoded MAC (same string format as `MacRead`).
+        mac: String,
+        /// Chip silicon revision as `major.minor` (e.g. "1.02"), or
+        /// "?" if the chip's revision bits aren't in the table.
+        chip_rev: String,
+        /// Absolute EFUSE base address of the dumped region (hex).
+        base: String,
+        /// One 32-bit word per entry, little-endian as read from the
+        /// memory-mapped EFUSE registers. Length matches the requested
+        /// `--words` count.
+        words: Vec<u32>,
+    },
     WriteBegin {
         addr: String,
         size: u64,
@@ -404,6 +417,28 @@ fn human(e: &LoggedEvent, c: bool) -> String {
             )
         ),
         Event::MacRead { mac } => format!("{} MAC {}", ts, bold(mac, c)),
+        Event::EfuseRead {
+            mac,
+            chip_rev,
+            base,
+            words,
+        } => {
+            let mut lines = vec![format!(
+                "{} EFUSE base={} MAC={} rev={}",
+                ts,
+                cyan(base, c),
+                bold(mac, c),
+                bold(chip_rev, c)
+            )];
+            for (i, w) in words.iter().enumerate() {
+                if i % 4 == 0 {
+                    lines.push(format!("{} {}", ts, cyan(format!("+{:#06x}", i * 4), c)));
+                }
+                let last = lines.len() - 1;
+                lines[last].push_str(&format!(" {:08x}", w));
+            }
+            lines.join("\n")
+        }
         Event::WriteBegin {
             addr,
             size,

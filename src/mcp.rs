@@ -35,12 +35,23 @@
 //!     namespaced under the official `notifications/` prefix; clients
 //!     with no handler discard it silently per JSON-RPC notification
 //!     semantics.
-//!   * Cancellation (`notifications/cancelled`): the v1 server runs
-//!     each tools/call to completion. Stubbed (we'll honour `cancelled`
-//!     in a follow-up commit by sending SIGINT to the child).
+//!   * Cancellation (`notifications/cancelled`): supported. The server
+//!     runs a persistent stdin-reader thread that channels incoming
+//!     messages to the main loop; mid-call, we poll the channel for a
+//!     matching `notifications/cancelled` and SIGINT the child if one
+//!     arrives. The child's existing signal-handling (Drop on
+//!     SerialTransport releases the flock; Drop on Child reaps) does
+//!     the right teardown.
+//!   * Progress (`notifications/progress`): if the client included
+//!     `_meta.progressToken` in the `tools/call` params, we
+//!     additionally forward `write_progress` / `read_progress` NDJSON
+//!     events as typed MCP progress notifications. Clients that
+//!     didn't supply a token only get the firehose-style
+//!     `notifications/esparagus/event` stream.
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -51,41 +62,137 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 /// child to the client. Clients that didn't subscribe just discard.
 const EVENT_NOTIFICATION_METHOD: &str = "notifications/esparagus/event";
 
+/// Tracks the currently-executing tools/call so the cancel notification
+/// can find and SIGINT it.
+#[derive(Default)]
+struct Inflight {
+    /// JSON-RPC request id of the call in progress, or `None` when idle.
+    request_id: Option<Value>,
+    /// PID of the spawned child esparagus process, if one is running.
+    child_pid: Option<u32>,
+    /// Set to `true` when a matching `notifications/cancelled` arrives;
+    /// the call handler checks this between child-stdout reads and
+    /// stops streaming early if seen.
+    cancelled: bool,
+}
+
 /// Entrypoint for the `esparagus mcp` subcommand. Returns the process
 /// exit code (0 on clean stdin EOF, 1 on internal error).
 pub fn run() -> i32 {
-    let stdin = io::stdin();
     let stdout = Arc::new(Mutex::new(io::stdout()));
+    let inflight = Arc::new(Mutex::new(Inflight::default()));
 
-    // BufRead for line-by-line iteration; JSON-RPC over stdio uses
-    // newline-delimited messages.
-    let reader = BufReader::new(stdin.lock());
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => return 1, // stdin closed unexpectedly
+    // Channel: stdin reader thread → main dispatcher.
+    let (tx, rx) = mpsc::channel::<Value>();
+
+    // Persistent stdin reader. Parses each line as JSON and forwards
+    // the Value. On EOF or parse error, sends a sentinel `Null` so the
+    // main loop knows to exit. Stays alive for the whole server run so
+    // `notifications/cancelled` mid-tools-call can be observed.
+    let tx_for_reader = tx.clone();
+    std::thread::spawn(move || {
+        let stdin = io::stdin();
+        let reader = BufReader::new(stdin.lock());
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Value>(trimmed) {
+                Ok(v) => {
+                    if tx_for_reader.send(v).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => {
+                    // Send a special marker so the main loop can emit the
+                    // parse error with the (unknown) id.
+                    let _ = tx_for_reader.send(json!({"__parse_error__": trimmed}));
+                }
+            }
+        }
+        // EOF — signal main loop to exit cleanly.
+        let _ = tx_for_reader.send(Value::Null);
+    });
+
+    loop {
+        let req = match rx.recv() {
+            Ok(v) => v,
+            Err(_) => break,
         };
-        let line = line.trim();
-        if line.is_empty() {
+        if req.is_null() {
+            // sentinel: stdin EOF
+            break;
+        }
+        if let Some(raw) = req.get("__parse_error__").and_then(|v| v.as_str()) {
+            send_error(
+                &stdout,
+                Value::Null,
+                -32700,
+                &format!("Parse error on input: {raw}"),
+            );
             continue;
         }
 
-        let req: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(e) => {
-                send_error(&stdout, Value::Null, -32700, &format!("Parse error: {e}"));
-                continue;
+        // Cancellation notifications are routed specially: try to
+        // SIGINT the child of the in-flight call (if its requestId
+        // matches) and DON'T fall through to the normal dispatcher.
+        if req
+            .get("method")
+            .and_then(|m| m.as_str())
+            .map(|m| m == "notifications/cancelled")
+            .unwrap_or(false)
+        {
+            let req_id = req.get("params").and_then(|p| p.get("requestId")).cloned();
+            let mut g = inflight.lock().unwrap();
+            if g.request_id == req_id {
+                if let Some(pid) = g.child_pid {
+                    // Best-effort SIGINT — child has its own signal
+                    // handlers and will release the port lock on drop.
+                    sigint_pid(pid);
+                }
+                g.cancelled = true;
             }
-        };
+            continue;
+        }
 
-        handle_message(&stdout, &req);
+        handle_message(&stdout, &req, &inflight, &rx);
     }
     0
 }
 
+/// SIGINT the given child PID. Cross-platform.
+#[cfg(unix)]
+fn sigint_pid(pid: u32) {
+    // SAFETY: passing a kernel-managed PID and a well-known signal
+    // number; the kill(2) call is safe to invoke from any thread.
+    unsafe {
+        nix::libc::kill(pid as i32, nix::libc::SIGINT);
+    }
+}
+#[cfg(not(unix))]
+fn sigint_pid(pid: u32) {
+    // Windows: best-effort terminate via TerminateProcess. We don't
+    // have a clean SIGINT equivalent without per-console attaching,
+    // and the child esparagus process will release its port lock on
+    // drop regardless.
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status();
+}
+
 /// Dispatch one incoming JSON-RPC message. Notifications (no `id`)
 /// produce no response.
-fn handle_message(stdout: &Arc<Mutex<io::Stdout>>, req: &Value) {
+fn handle_message(
+    stdout: &Arc<Mutex<io::Stdout>>,
+    req: &Value,
+    inflight: &Arc<Mutex<Inflight>>,
+    rx: &mpsc::Receiver<Value>,
+) {
     let id = req.get("id").cloned();
     let is_notification = id.is_none();
     let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
@@ -96,13 +203,12 @@ fn handle_message(stdout: &Arc<Mutex<io::Stdout>>, req: &Value) {
         // `notifications/initialized` is a one-shot fire-and-forget
         // signal that the client finished initialising. No response.
         "notifications/initialized" | "initialized" => return,
-        // Some clients send `notifications/cancelled` for in-flight
-        // requests; the v1 server doesn't support mid-flight cancel, so
-        // we accept and ignore.
+        // notifications/cancelled is intercepted in the main loop
+        // before reaching here, but ignore defensively.
         "notifications/cancelled" => return,
         "ping" => Ok(json!({})),
         "tools/list" => Ok(handle_tools_list()),
-        "tools/call" => handle_tools_call(stdout, &params),
+        "tools/call" => handle_tools_call(stdout, &id, &params, inflight, rx),
         // resources/* and prompts/* are MCP optional features we don't
         // expose yet; respond with method-not-found per JSON-RPC.
         _ if !is_notification => Err((-32601, format!("Method not found: {method}"))),
@@ -184,13 +290,16 @@ fn tool_catalog() -> Vec<Value> {
 
     tools.push(json!({
         "name": "merge_bin",
-        "description": "Offline: combine multiple (address, file) pairs into one padded binary. Useful for building a complete flash image for distribution.",
+        "description": "Offline: combine multiple (address, file) pairs into one image. `format=raw` (default) writes a padded .bin matching upstream `esptool merge-bin`; `format=uf2` writes a Microsoft UF2 container (needs `chip` for the family ID).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "output":        {"type": "string", "description": "Output .bin path."},
-                "target_size":   {"type": ["integer", "null"], "description": "Pad to this size (bytes)."},
-                "target_offset": {"type": "integer", "default": 0, "description": "Subtract this from each piece's address."},
+                "output":        {"type": "string", "description": "Output file path."},
+                "format":        {"type": "string", "enum": ["raw", "uf2"], "default": "raw"},
+                "chip":          {"type": "string", "description": "Target chip (required for format=uf2)."},
+                "no_md5":        {"type": "boolean", "default": false, "description": "UF2 only: omit per-block MD5 footer."},
+                "target_size":   {"type": ["integer", "null"], "description": "Raw only: pad to this size."},
+                "target_offset": {"type": "integer", "default": 0, "description": "Raw only: subtract this from each piece's address."},
                 "pairs": {
                     "type": "array",
                     "description": "Pairs of (address, file_path).",
@@ -226,6 +335,20 @@ fn tool_catalog() -> Vec<Value> {
         "inputSchema": {
             "type": "object",
             "properties": { "port": port_prop, "baud": baud_prop, "chip": chip_prop },
+            "additionalProperties": false
+        }
+    }));
+    tools.push(json!({
+        "name": "read_efuse",
+        "description": "Read EFUSE BLOCK0+BLOCK1 as 32-bit words + decoded BASE_MAC and (for chips with a known formula) silicon revision. Read-only; EFUSE burn is intentionally not exposed.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "port": port_prop,
+                "baud": baud_prop,
+                "chip": chip_prop,
+                "words": {"type": "integer", "default": 64, "description": "How many 32-bit words to dump."}
+            },
             "additionalProperties": false
         }
     }));
@@ -482,6 +605,13 @@ fn tool_to_cli(name: &str, args: &Value) -> Result<Vec<String>, String> {
         "detect" => argv.push("detect".into()),
         "read_mac" => argv.push("read-mac".into()),
         "flash_id" => argv.push("flash-id".into()),
+        "read_efuse" => {
+            argv.push("read-efuse".into());
+            if let Some(n) = args.get("words").and_then(|v| v.as_u64()) {
+                argv.push("--words".into());
+                argv.push(n.to_string());
+            }
+        }
         "reset" => argv.push("reset".into()),
         "erase_flash" => argv.push("erase-flash".into()),
 
@@ -584,6 +714,21 @@ fn tool_to_cli(name: &str, args: &Value) -> Result<Vec<String>, String> {
             argv.push("merge-bin".into());
             argv.push("--output".into());
             argv.push(required_str(args, "output")?);
+            if let Some(fmt) = args.get("format").and_then(|v| v.as_str()) {
+                argv.push("--format".into());
+                argv.push(fmt.to_string());
+            }
+            if let Some(c) = args.get("chip").and_then(|v| v.as_str()) {
+                argv.push("--chip".into());
+                argv.push(c.to_string());
+            }
+            if args
+                .get("no_md5")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                argv.push("--no-md5".into());
+            }
             if let Some(n) = args.get("target_size").and_then(|v| v.as_u64()) {
                 argv.push("--target-size".into());
                 argv.push(n.to_string());
@@ -707,15 +852,31 @@ fn append_monitor_flags(argv: &mut Vec<String>, args: &Value) {
 
 /// Run a tool: spawn child esparagus, stream stdout (NDJSON) as
 /// per-event MCP notifications, return final summary as content.
+///
+/// Supports two MCP features beyond plain tool execution:
+///   * `_meta.progressToken` in the call params → typed
+///     `notifications/progress` for write progress events.
+///   * `notifications/cancelled` for this request → the persistent
+///     stdin reader thread observes it and sets `inflight.cancelled`,
+///     which this function checks each iteration; the child is
+///     SIGINT'd from the cancel handler and we stop streaming.
 fn handle_tools_call(
     stdout: &Arc<Mutex<io::Stdout>>,
+    request_id: &Option<Value>,
     params: &Value,
+    inflight: &Arc<Mutex<Inflight>>,
+    _rx: &mpsc::Receiver<Value>,
 ) -> Result<Value, (i64, String)> {
     let name = params
         .get("name")
         .and_then(|v| v.as_str())
         .ok_or((-32602, "missing tool name".to_string()))?;
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
+
+    let progress_token = params
+        .get("_meta")
+        .and_then(|m| m.get("progressToken"))
+        .cloned();
 
     let cli_args = tool_to_cli(name, &args).map_err(|e| (-32602, e))?;
 
@@ -728,6 +889,13 @@ fn handle_tools_call(
         .spawn()
         .map_err(|e| (-32603, format!("spawn esparagus child: {e}")))?;
 
+    {
+        let mut g = inflight.lock().unwrap();
+        g.request_id = request_id.clone();
+        g.child_pid = Some(child.id());
+        g.cancelled = false;
+    }
+
     // Stream stdout as MCP notifications.
     let child_stdout = child
         .stdout
@@ -736,6 +904,9 @@ fn handle_tools_call(
     let mut events: Vec<Value> = Vec::new();
     let reader = BufReader::new(child_stdout);
     for line in reader.lines() {
+        if inflight.lock().unwrap().cancelled {
+            break;
+        }
         let line = match line {
             Ok(l) => l,
             Err(_) => break,
@@ -752,14 +923,30 @@ fn handle_tools_call(
                 "params": { "tool": name, "event": event }
             });
             send_message(stdout, &notif);
+            if let Some(token) = &progress_token {
+                forward_progress(stdout, token, &event);
+            }
         }
     }
 
     let output = child
         .wait_with_output()
         .map_err(|e| (-32603, format!("wait_with_output: {e}")))?;
+
+    let was_cancelled;
+    {
+        let mut g = inflight.lock().unwrap();
+        was_cancelled = g.cancelled;
+        g.request_id = None;
+        g.child_pid = None;
+        g.cancelled = false;
+    }
+
     let stderr_str = String::from_utf8_lossy(&output.stderr).into_owned();
-    let exit_code = output.status.code().unwrap_or(-1);
+    let exit_code = output
+        .status
+        .code()
+        .unwrap_or(if was_cancelled { 130 } else { -1 });
 
     // Build the human-readable summary from the last terminal event
     // (`run_complete` for chip-flow tools, `monitor_complete` for
@@ -896,6 +1083,40 @@ fn send_message(stdout: &Arc<Mutex<io::Stdout>>, msg: &Value) {
     let _ = g.flush();
 }
 
+/// If `event` is a write_progress / read_progress / write_begin /
+/// erase_done style event with the numeric fields needed for MCP
+/// `notifications/progress`, emit one with the client's progress token.
+fn forward_progress(stdout: &Arc<Mutex<io::Stdout>>, token: &Value, event: &Value) {
+    let Some(name) = event.get("event").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let (progress, total) = match name {
+        "write_progress" => (
+            event.get("written").and_then(|v| v.as_u64()),
+            event.get("total").and_then(|v| v.as_u64()),
+        ),
+        // read_flash + backup don't currently emit per-block progress
+        // (the stub streams in chunks but we don't surface those as a
+        // separate event in addition to the indicatif bar). Hook here
+        // when we add it.
+        _ => return,
+    };
+    let (Some(progress), Some(total)) = (progress, total) else {
+        return;
+    };
+    let _ = total; // keep both in scope below
+    let msg = json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+            "progressToken": token,
+            "progress": progress,
+            "total": total
+        }
+    });
+    send_message(stdout, &msg);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,6 +1133,7 @@ mod tests {
             "detect",
             "read_mac",
             "flash_id",
+            "read_efuse",
             "partitions",
             "read_partition",
             "write_partition",

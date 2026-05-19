@@ -129,6 +129,115 @@ pub fn merge_bin(
 }
 
 // ---------------------------------------------------------------------------
+// UF2 output (https://github.com/microsoft/uf2)
+// ---------------------------------------------------------------------------
+
+/// UF2 family IDs for each ESP32 target. Sourced from upstream
+/// esptool's `targets/<chip>.py:UF2_FAMILY_ID`. Keep in sync with
+/// chip.rs `Chip::name`.
+///
+/// These IDs are registered with microsoft/uf2 — they let bootloaders
+/// (e.g. tinyusb DFU/UF2) reject blocks intended for the wrong silicon.
+pub fn uf2_family_id(chip_name: &str) -> Option<u32> {
+    Some(match chip_name {
+        "esp32" => 0x1C5F21B0,
+        "esp32-s2" => 0xBFDD4EEE,
+        "esp32-s3" => 0xC47E5767,
+        "esp32-c2" => 0x2B88D29C,
+        "esp32-c3" => 0xD42BA06C,
+        "esp32-c5" => 0xF71C0343,
+        "esp32-c6" => 0x540DDF62,
+        "esp32-c61" => 0x77D850C4,
+        "esp32-h2" => 0x332726F6,
+        "esp32-h21" => 0xB6DD00AF,
+        "esp32-h4" => 0x9E0BAA8A,
+        "esp32-p4" => 0x3D308E94,
+        "esp32-s31" => 0x3101F7C1,
+        "esp8266" => 0x7EAB61ED,
+        _ => return None,
+    })
+}
+
+/// Build a UF2 image from `(addr, bytes)` pairs.
+///
+/// Each input file becomes its own logical stream of UF2 blocks
+/// addressed starting at its load address (same as esptool's
+/// `UF2Writer.add_file`). Block size is always 512 bytes; payload
+/// per block is `data_size = 476 - (24 if md5 else 0) = 452 or 476`.
+///
+/// When `md5=true`, each block carries an MD5 record (per UF2 spec
+/// extension `UF2_FLAG_MD5_PRESENT = 0x4000`): 8 bytes (addr,len) +
+/// 16 bytes md5(chunk).
+///
+/// Reference: esptool/uf2_writer.py (GPL-2.0).
+pub fn merge_uf2(parts: &[(u32, Vec<u8>)], family_id: u32, md5: bool) -> Result<Vec<u8>> {
+    if parts.is_empty() {
+        return Err(Error::Other("merge_uf2 requires at least one part".into()));
+    }
+
+    const BLOCK_SIZE: usize = 512;
+    const DATA_REGION: usize = 476;
+    const MD5_PART_SIZE: usize = 24;
+    const FIRST_MAGIC: u32 = 0x0A324655;
+    const SECOND_MAGIC: u32 = 0x9E5D5157;
+    const FINAL_MAGIC: u32 = 0x0AB16F30;
+    const FLAG_FAMILYID: u32 = 0x0000_2000;
+    const FLAG_MD5: u32 = 0x0000_4000;
+
+    let chunk_size = if md5 {
+        DATA_REGION - MD5_PART_SIZE
+    } else {
+        DATA_REGION
+    };
+    let flags = FLAG_FAMILYID | if md5 { FLAG_MD5 } else { 0 };
+
+    let mut out: Vec<u8> = Vec::new();
+
+    for (start_addr, image) in parts {
+        if image.is_empty() {
+            continue;
+        }
+        let blocks_total: u32 = image.len().div_ceil(chunk_size) as u32;
+        let mut addr = *start_addr;
+        for (block_no, chunk) in image.chunks(chunk_size).enumerate() {
+            let mut block = Vec::with_capacity(BLOCK_SIZE);
+            // 32-byte header
+            block.extend_from_slice(&FIRST_MAGIC.to_le_bytes());
+            block.extend_from_slice(&SECOND_MAGIC.to_le_bytes());
+            block.extend_from_slice(&flags.to_le_bytes());
+            block.extend_from_slice(&addr.to_le_bytes());
+            block.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+            block.extend_from_slice(&(block_no as u32).to_le_bytes());
+            block.extend_from_slice(&blocks_total.to_le_bytes());
+            block.extend_from_slice(&family_id.to_le_bytes());
+            // payload
+            block.extend_from_slice(chunk);
+            // pad payload up to (DATA_REGION - md5_region)
+            block.resize(32 + chunk_size, 0);
+            // MD5 trailer (24 bytes), if enabled
+            if md5 {
+                use md5::{Digest, Md5};
+                block.extend_from_slice(&addr.to_le_bytes());
+                block.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+                let mut h = Md5::new();
+                h.update(chunk);
+                let digest = h.finalize();
+                block.extend_from_slice(&digest);
+                debug_assert_eq!(block.len(), 32 + DATA_REGION);
+            } else {
+                debug_assert_eq!(block.len(), 32 + DATA_REGION);
+            }
+            // final magic
+            block.extend_from_slice(&FINAL_MAGIC.to_le_bytes());
+            debug_assert_eq!(block.len(), BLOCK_SIZE);
+            out.extend_from_slice(&block);
+            addr += chunk.len() as u32;
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // elf2image
 // ---------------------------------------------------------------------------
 
@@ -394,6 +503,92 @@ mod tests {
     fn merge_bin_rejects_below_offset() {
         let parts = vec![(0x5, vec![0x11])];
         assert!(merge_bin(&parts, 0x10, None).is_err());
+    }
+
+    #[test]
+    fn uf2_family_ids_known_chips() {
+        assert_eq!(uf2_family_id("esp32"), Some(0x1C5F21B0));
+        assert_eq!(uf2_family_id("esp32-s3"), Some(0xC47E5767));
+        assert_eq!(uf2_family_id("esp32-p4"), Some(0x3D308E94));
+        assert_eq!(uf2_family_id("esp32-c5"), Some(0xF71C0343));
+        assert_eq!(uf2_family_id("madeup"), None);
+    }
+
+    #[test]
+    fn uf2_block_structure() {
+        // 100-byte input → 1 block (since data region is 452 bytes).
+        let parts = vec![(0x10000, vec![0xAB; 100])];
+        let family = uf2_family_id("esp32-c3").unwrap();
+        let out = merge_uf2(&parts, family, true).unwrap();
+        assert_eq!(out.len(), 512); // exactly one block
+
+        // Magic numbers.
+        assert_eq!(&out[0..4], &0x0A324655u32.to_le_bytes());
+        assert_eq!(&out[4..8], &0x9E5D5157u32.to_le_bytes());
+        // Flags: familyID + MD5
+        assert_eq!(
+            u32::from_le_bytes(out[8..12].try_into().unwrap()),
+            0x2000 | 0x4000
+        );
+        // target addr
+        assert_eq!(u32::from_le_bytes(out[12..16].try_into().unwrap()), 0x10000);
+        // payload size
+        assert_eq!(u32::from_le_bytes(out[16..20].try_into().unwrap()), 100);
+        // block_no = 0
+        assert_eq!(u32::from_le_bytes(out[20..24].try_into().unwrap()), 0);
+        // num_blocks = 1
+        assert_eq!(u32::from_le_bytes(out[24..28].try_into().unwrap()), 1);
+        // family id
+        assert_eq!(u32::from_le_bytes(out[28..32].try_into().unwrap()), family);
+        // final magic
+        assert_eq!(&out[508..512], &0x0AB16F30u32.to_le_bytes());
+    }
+
+    #[test]
+    fn uf2_multi_block_addressing() {
+        // 600-byte input → 2 blocks (chunk_size with md5 = 452).
+        let parts = vec![(0x0, vec![0x55; 600])];
+        let family = uf2_family_id("esp32").unwrap();
+        let out = merge_uf2(&parts, family, true).unwrap();
+        assert_eq!(out.len(), 1024); // 2 blocks
+
+        // First block: addr=0, payload_size=452.
+        assert_eq!(u32::from_le_bytes(out[12..16].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(out[16..20].try_into().unwrap()), 452);
+        // num_blocks = 2
+        assert_eq!(u32::from_le_bytes(out[24..28].try_into().unwrap()), 2);
+
+        // Second block (offset 512): addr=452, payload_size=148, block_no=1
+        let b2 = &out[512..1024];
+        assert_eq!(u32::from_le_bytes(b2[12..16].try_into().unwrap()), 452);
+        assert_eq!(u32::from_le_bytes(b2[16..20].try_into().unwrap()), 148);
+        assert_eq!(u32::from_le_bytes(b2[20..24].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn uf2_per_file_addressing() {
+        // Two files at different addresses — each gets its own UF2
+        // sequence starting from its own load address.
+        let parts = vec![(0x1000, vec![0xAA; 8]), (0x10000, vec![0xBB; 8])];
+        let family = uf2_family_id("esp32-s3").unwrap();
+        let out = merge_uf2(&parts, family, false).unwrap();
+        assert_eq!(out.len(), 1024); // 2 single-block files
+
+        // Block 1: addr=0x1000, block_no=0, num_blocks=1
+        assert_eq!(u32::from_le_bytes(out[12..16].try_into().unwrap()), 0x1000);
+        assert_eq!(u32::from_le_bytes(out[20..24].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(out[24..28].try_into().unwrap()), 1);
+
+        // Block 2: addr=0x10000, block_no=0, num_blocks=1
+        let b2 = &out[512..1024];
+        assert_eq!(u32::from_le_bytes(b2[12..16].try_into().unwrap()), 0x10000);
+        assert_eq!(u32::from_le_bytes(b2[20..24].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(b2[24..28].try_into().unwrap()), 1);
+        // No MD5 flag in second file either.
+        assert_eq!(
+            u32::from_le_bytes(b2[8..12].try_into().unwrap()),
+            0x2000 // family-id only
+        );
     }
 
     #[test]
