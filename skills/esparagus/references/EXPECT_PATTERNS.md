@@ -98,6 +98,7 @@ esparagus:
 | `Exception was unhandled` | `exception` | RISC-V panic handler |
 | `Cache disabled but cached memory region accessed` | `cache` | ESP cache fault |
 | `Brownout detector was triggered` | `brownout` | ROM brownout |
+| `boot:0x.. \(DOWNLOAD` | `download_loop` | Chip dropped into ROM DOWNLOAD mode after reset — i.e. the freshly-written firmware isn't actually booting. Often means the BOOT strap is held low (auto-reset circuit, faulty boot button) or the image at the app offset is invalid. |
 
 The patterns are checked in this order; the first match wins.
 

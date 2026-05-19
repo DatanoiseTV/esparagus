@@ -74,6 +74,11 @@ const CRASH_PATTERNS: &[(&str, &str)] = &[
     (r"Cache disabled but cached memory region accessed", "cache"),
     // ROM brownout
     (r"Brownout detector was triggered", "brownout"),
+    // Firmware didn't boot — the chip dropped into ROM DOWNLOAD mode.
+    // The ROM's own boot banner announces this; matching it in monitor
+    // (i.e. *after* the flash phase) is the signal the agent needs that
+    // the freshly-written firmware isn't actually running.
+    (r"boot:0x[0-9a-fA-F]+ \(DOWNLOAD", "download_loop"),
 ];
 
 /// Sentinel lines that mark "the crash output is done" — we stop the
@@ -400,5 +405,28 @@ mod tests {
         assert!(CRASH_END_SENTINELS
             .iter()
             .any(|s| "Rebooting...".contains(s)));
+    }
+
+    /// Verbatim ROM boot announcement when the chip drops into download
+    /// mode (e.g. because firmware didn't boot or the BOOT strap is held
+    /// low). Should classify as `download_loop` so an agent watching a
+    /// post-flash monitor knows the chip isn't actually running the
+    /// image we just wrote.
+    #[test]
+    fn detects_unexpected_download_mode() {
+        assert_eq!(
+            classify("rst:0x15 (USB_UART_HPSYS),boot:0x49 (DOWNLOAD(UART0/USB))"),
+            Some("download_loop")
+        );
+        assert_eq!(
+            classify("rst:0x1 (POWERON),boot:0x07 (DOWNLOAD(USB/UART0/SPI))"),
+            Some("download_loop")
+        );
+        // A normal boot line (the chip booting from flash) doesn't carry
+        // the (DOWNLOAD ...) tail, so we don't false-flag.
+        assert_eq!(
+            classify("rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)"),
+            None
+        );
     }
 }
