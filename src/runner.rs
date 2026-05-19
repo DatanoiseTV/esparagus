@@ -1038,6 +1038,37 @@ fn run_inner(
     let after: AfterMode = cli.after.clone().into();
     match after {
         AfterMode::HardReset => {
+            // Esptool parity: on chips with a sticky FORCE_DOWNLOAD_BOOT
+            // bit (S2, S3, P4 via USB-OTG), clear it before the EN pulse
+            // so the chip lands in flash on the next reset instead of
+            // dropping back into the ROM download loop. The write may
+            // fail during a teardown race (e.g. the stub already exited
+            // its command loop); we treat that as best-effort, matching
+            // upstream esptool's `try/except` pattern.
+            if let Some(reg) = chip.rtc_cntl_option1_reg {
+                let mask = chip.rtc_cntl_force_download_boot_mask;
+                match conn.write_reg(reg, 0, mask, 0) {
+                    Ok(()) => {
+                        tracing::debug!(
+                            target: "esparagus::reset",
+                            reg = format_args!("{:#010x}", reg),
+                            mask = format_args!("{:#x}", mask),
+                            "cleared FORCE_DOWNLOAD_BOOT before hard reset"
+                        );
+                    }
+                    Err(e) => {
+                        // Surface as a warning so an agent watching the
+                        // NDJSON sees we tried; not a fatal condition.
+                        emitter.warn(Event::Warning {
+                            message: format!(
+                                "could not clear FORCE_DOWNLOAD_BOOT at {:#010x} (mask {:#x}): {}; \
+                                 hard reset may land back in download mode",
+                                reg, mask, e
+                            ),
+                        });
+                    }
+                }
+            }
             let uses_usb = chip.has_usb_jtag_serial
                 && vid_pid == Some((reset::ESPRESSIF_VID, reset::USB_JTAG_SERIAL_PID));
             reset::hard_reset(&mut *conn.transport, uses_usb)?;

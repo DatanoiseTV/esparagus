@@ -79,6 +79,18 @@ pub struct Chip {
     /// revision and package info live.  Used by `stub_blob_selector` and any
     /// other code that reads chip-specific configuration.
     pub efuse_block1_addr: u32,
+
+    /// `RTC_CNTL_OPTION1_REG` — address of the register that holds the
+    /// sticky `FORCE_DOWNLOAD_BOOT` bit on chips that have it (Xtensa
+    /// USB-OTG family: S2, S3, P4). Once the ROM bootloader has entered
+    /// USB download mode it sets this bit, and the bit survives a reset,
+    /// so an EN pulse alone re-enters download. Before issuing a hard
+    /// reset we clear the bit via `write_reg(..., 0, mask)`. `None` on
+    /// chips that don't have it (ESP32, C-series, H2).
+    pub rtc_cntl_option1_reg: Option<u32>,
+    /// Bit mask within `rtc_cntl_option1_reg` for FORCE_DOWNLOAD_BOOT.
+    /// Differs per chip family (e.g. P4 uses 0x4, S2/S3 use 0x1).
+    pub rtc_cntl_force_download_boot_mask: u32,
 }
 
 /// A chip-specific function that picks the right stub blob name at runtime,
@@ -141,6 +153,8 @@ pub const REGISTRY: &[Chip] = &[
         stub_blob_name: "esp32",
         stub_blob_selector: None,
         efuse_block1_addr: 0x3FF5A044,
+        rtc_cntl_option1_reg: None,
+        rtc_cntl_force_download_boot_mask: 0,
     },
     // ESP32-S2 — magic 0x000007C6, EFUSE in MMIO range 0x3F41A000.
     Chip {
@@ -176,6 +190,8 @@ pub const REGISTRY: &[Chip] = &[
         stub_blob_name: "esp32s2",
         stub_blob_selector: None,
         efuse_block1_addr: 0x3F41A044,
+        rtc_cntl_option1_reg: Some(0x3F408128),
+        rtc_cntl_force_download_boot_mask: 0x1,
     },
     // ESP32-S3 — uses chip_id (GET_SECURITY_INFO) for detection.
     Chip {
@@ -211,6 +227,8 @@ pub const REGISTRY: &[Chip] = &[
         stub_blob_name: "esp32s3",
         stub_blob_selector: None,
         efuse_block1_addr: 0x60007044,
+        rtc_cntl_option1_reg: Some(0x6000812C),
+        rtc_cntl_force_download_boot_mask: 0x1,
     },
     // ESP32-C2 — magic via chip_id (inherits from C3).
     Chip {
@@ -246,6 +264,8 @@ pub const REGISTRY: &[Chip] = &[
         stub_blob_name: "esp32c2",
         stub_blob_selector: None,
         efuse_block1_addr: 0x60008844,
+        rtc_cntl_option1_reg: None,
+        rtc_cntl_force_download_boot_mask: 0,
     },
     // ESP32-C3 — chip_id based detection.
     Chip {
@@ -281,6 +301,8 @@ pub const REGISTRY: &[Chip] = &[
         stub_blob_name: "esp32c3",
         stub_blob_selector: None,
         efuse_block1_addr: 0x60008844,
+        rtc_cntl_option1_reg: None,
+        rtc_cntl_force_download_boot_mask: 0,
     },
     // ESP32-C6 — chip_id based detection. SPI base differs from C3.
     Chip {
@@ -317,6 +339,8 @@ pub const REGISTRY: &[Chip] = &[
         stub_blob_name: "esp32c6",
         stub_blob_selector: None,
         efuse_block1_addr: 0x600B0844,
+        rtc_cntl_option1_reg: None,
+        rtc_cntl_force_download_boot_mask: 0,
     },
     // ESP32-H2 — inherits C6 layout but slightly different LP_WDT regs.
     Chip {
@@ -352,6 +376,8 @@ pub const REGISTRY: &[Chip] = &[
         stub_blob_name: "esp32h2",
         stub_blob_selector: None,
         efuse_block1_addr: 0x600B0844,
+        rtc_cntl_option1_reg: None,
+        rtc_cntl_force_download_boot_mask: 0,
     },
     // ESP32-C5 — chip_id 23, new EFUSE base.
     Chip {
@@ -378,6 +404,8 @@ pub const REGISTRY: &[Chip] = &[
         stub_blob_name: "esp32c5",
         stub_blob_selector: None,
         efuse_block1_addr: 0x600B4844,
+        rtc_cntl_option1_reg: None,
+        rtc_cntl_force_download_boot_mask: 0,
     },
     // ESP32-P4 — chip_id 18; new SPIMEM1 base in MMIO 0x5008D000.
     Chip {
@@ -404,6 +432,8 @@ pub const REGISTRY: &[Chip] = &[
         stub_blob_name: "esp32p4",
         stub_blob_selector: Some(esp32p4_stub_selector),
         efuse_block1_addr: 0x5012D044,
+        rtc_cntl_option1_reg: Some(0x50110008),
+        rtc_cntl_force_download_boot_mask: 0x4,
     },
 ];
 
