@@ -88,10 +88,7 @@ pub fn run() -> i32 {
 fn handle_message(stdout: &Arc<Mutex<io::Stdout>>, req: &Value) {
     let id = req.get("id").cloned();
     let is_notification = id.is_none();
-    let method = req
-        .get("method")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
+    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
     let params = req.get("params").cloned().unwrap_or(json!({}));
 
     let result: Result<Value, (i64, String)> = match method {
@@ -722,8 +719,7 @@ fn handle_tools_call(
 
     let cli_args = tool_to_cli(name, &args).map_err(|e| (-32602, e))?;
 
-    let me = std::env::current_exe()
-        .map_err(|e| (-32603, format!("current_exe: {e}")))?;
+    let me = std::env::current_exe().map_err(|e| (-32603, format!("current_exe: {e}")))?;
 
     let mut child = Command::new(&me)
         .args(&cli_args)
@@ -941,8 +937,11 @@ mod tests {
 
     #[test]
     fn tool_to_cli_detect_basic() {
-        let argv =
-            tool_to_cli("detect", &json!({"port": "/dev/cu.usbmodem1", "baud": 460800})).unwrap();
+        let argv = tool_to_cli(
+            "detect",
+            &json!({"port": "/dev/cu.usbmodem1", "baud": 460800}),
+        )
+        .unwrap();
         assert!(argv.contains(&"--port".into()));
         assert!(argv.contains(&"/dev/cu.usbmodem1".into()));
         assert!(argv.contains(&"--json".into()));
