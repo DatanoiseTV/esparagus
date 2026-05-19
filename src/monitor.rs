@@ -178,11 +178,51 @@ pub fn run(
 
     loop {
         let now = Instant::now();
+
+        // Bug fix from a real bench session: the crash-context flush
+        // used to be gated on a new line arriving. When the chip went
+        // silent right after a crash signature (typical for a
+        // `reboot_loop`: chip rebooted, ROM banner printed, then
+        // chip stuck in download mode waiting), the time budget never
+        // got checked and the run terminated as `timeout` instead of
+        // `crash`. Check the budget every poll iteration here, before
+        // the overall-deadline check, so a silent chip still produces
+        // the crash_context event the agent needs.
+        if let Some((kind, started_at, _)) = crash_ctx.as_ref() {
+            if started_at.elapsed() >= CRASH_CONTEXT_MAX_DURATION {
+                let _ = kind;
+                let (k, _, lines) = crash_ctx.take().unwrap();
+                emitter.error(Event::CrashContext { kind: k, lines });
+                emitter.info(Event::MonitorComplete {
+                    reason: "crash",
+                    duration_ms: started.elapsed().as_millis(),
+                    lines_seen,
+                    bytes_seen,
+                });
+                return Ok(Outcome::Crash);
+            }
+        }
+
         if now >= deadline {
             // Flush any partial trailing line so the user/agent sees it.
             if !line_buf.is_empty() {
                 emit_line(emitter, &line_buf, &mut lines_seen, print_raw);
                 line_buf.clear();
+            }
+            // If we're mid-crash-context when the overall deadline hits,
+            // promote the outcome to `crash` rather than dropping the
+            // context on the floor — the agent's branching cares about
+            // *why* we stopped, and "crash with truncated context" is
+            // still better signal than "timeout".
+            if let Some((kind, _, lines)) = crash_ctx.take() {
+                emitter.error(Event::CrashContext { kind, lines });
+                emitter.info(Event::MonitorComplete {
+                    reason: "crash",
+                    duration_ms: started.elapsed().as_millis(),
+                    lines_seen,
+                    bytes_seen,
+                });
+                return Ok(Outcome::Crash);
             }
             emitter.warn(Event::MonitorTimeout {
                 lines_seen,
