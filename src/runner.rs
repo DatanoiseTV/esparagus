@@ -552,6 +552,31 @@ fn run_inner(
             }
             if !sync_ok {
                 connect_guard.bump_attempt();
+                // After the first whole reset+sync attempt fails, surface
+                // an actionable hint up-front instead of making the user
+                // wait ~25s for the full retry budget to drain.  Tailor
+                // the wording to the connection type — on native USB-
+                // Serial/JTAG, firmware that has grabbed the USB
+                // peripheral is the overwhelmingly common cause.
+                if attempt == 0 {
+                    let on_native_usb = matches!(
+                        vid_pid,
+                        Some((reset::ESPRESSIF_VID, reset::USB_JTAG_SERIAL_PID))
+                    );
+                    let msg = if on_native_usb {
+                        "chip is not entering ROM bootloader. \
+                         If firmware on the chip has grabbed the USB-Serial/JTAG \
+                         peripheral, the host-side reset can't pull it back. \
+                         To recover: hold BOOT, tap RESET, release BOOT, then retry."
+                            .to_string()
+                    } else {
+                        "chip is not responding to sync. \
+                         To force download mode: hold BOOT, tap RESET, release BOOT, \
+                         then retry. Or try --baud 115200."
+                            .to_string()
+                    };
+                    emitter.warn(Event::Warning { message: msg });
+                }
                 continue;
             }
         }
