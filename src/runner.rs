@@ -901,18 +901,12 @@ fn run_inner(
                 buf.push(conn.read_reg(addr)?);
             }
             let mac = ops::read_mac(&mut conn, chip)?;
-            let chip_rev = match chip.name {
-                "ESP32-P4" => {
-                    let word = conn.read_reg(chip.efuse_block1_addr + 4 * 2)?;
-                    let minor = word & 0x0F;
-                    let major = (((word >> 23) & 1) << 2) | ((word >> 4) & 0x03);
-                    format!("{}.{:02}", major, minor)
-                }
-                // Other chips have chip-rev bits at different EFUSE
-                // positions; full per-chip decoding is future work
-                // (esparagus 0.2+). For now we emit the raw words so
-                // a caller who knows their target can decode locally.
-                _ => "?".into(),
+            // Use the shared per-chip decoder. Falls back to "?" only
+            // if the chip name isn't in the decoder table (shouldn't
+            // happen for anything in `chip::REGISTRY`).
+            let chip_rev = match crate::efuse::read_silicon_revision(&mut conn, chip) {
+                Ok(r) => r.human(),
+                Err(_) => "?".into(),
             };
             emitter.info(Event::EfuseRead {
                 mac: ops::format_mac(&mac),

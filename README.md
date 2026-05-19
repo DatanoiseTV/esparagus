@@ -438,7 +438,7 @@ or CI script can branch on them without reading the English `detail`.
 | `monitor` | yes | Serial monitor with expect / built-in crash detection (default baud 115200) |
 | `flash-monitor` | yes | `write-flash` + `monitor` in one command |
 | `expect` | yes (no with `--check`) | Run a TOML expect script (send/expect/branches/captures + crash detection) |
-| `read-efuse` | yes | Dump EFUSE BLOCK0+BLOCK1 + decoded MAC and (where known) silicon revision |
+| `read-efuse` | yes | Dump EFUSE BLOCK0+BLOCK1 + decoded MAC + silicon revision (all 13 chips) |
 | `completions` / `man` | no | Emit shell completion / man-page source on stdout |
 | `nvs view` / `nvs export` | yes (or `--from-file`) | NVS partition inspection (TUI or JSON) |
 | `elf2image` | no | ELF → ESP firmware image |

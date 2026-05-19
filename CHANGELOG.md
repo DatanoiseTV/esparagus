@@ -54,9 +54,11 @@ All notable changes to this project follow
   `targets/*.py:UF2_FAMILY_ID`). `--no-md5` clears the per-block MD5
   trailer.
 - `read-efuse` reads BLOCK0+BLOCK1 of the EFUSE peripheral as 32-bit
-  words plus a decoded BASE_MAC (all chips) and silicon revision
-  (ESP32-P4 today). EFUSE burn intentionally remains out of scope
-  for v0.x — use `espefuse.py` for that.
+  words plus a decoded BASE_MAC and **silicon revision for every
+  chip in the registry** (ESP32, S2, S3, C2, C3, C5, C6, C61, H2,
+  H4, P4, S31; ESP32-H21 returns 0.0 placeholder, matching upstream
+  esptool pending public bit-position spec). EFUSE burn intentionally
+  remains out of scope for v0.x — use `espefuse.py` for that.
 - MCP server now honours `notifications/cancelled` mid-call (SIGINT
   to the spawned child) and emits typed `notifications/progress`
   when the client supplied a `_meta.progressToken`.

@@ -100,17 +100,15 @@ pub type StubBlobSelector =
 
 /// ESP32-P4 has two stub variants — one for silicon rev < 3.00, one for the
 /// rest.  Picking wrong causes the stub to crash on entry and never emit OHAI.
+///
+/// Delegates the revision read to `crate::efuse::read_silicon_revision`
+/// so the bit-position table lives in one place across the codebase.
 pub fn esp32p4_stub_selector(
     chip: &Chip,
     conn: &mut crate::protocol::Connection,
 ) -> crate::error::Result<&'static str> {
-    // EFUSE BLOCK1 word 2 holds the revision bits; mirrored from upstream
-    // ESP32P4ROM.get_major_chip_version() / get_minor_chip_version().
-    let word = conn.read_reg(chip.efuse_block1_addr + 4 * 2)?;
-    let minor = word & 0x0F;
-    let major = (((word >> 23) & 1) << 2) | ((word >> 4) & 0x03);
-    let revision = major * 100 + minor;
-    Ok(if revision < 300 {
+    let rev = crate::efuse::read_silicon_revision(conn, chip)?;
+    Ok(if rev.full() < 300 {
         "esp32p4-rev1"
     } else {
         "esp32p4"
