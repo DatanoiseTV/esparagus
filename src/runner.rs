@@ -484,6 +484,7 @@ fn exit_code_for(report: &Report) -> i32 {
         "chip_mismatch" => 12,
         "md5_mismatch" | "command_failed" => 13,
         "stub_handshake" | "stub_upload" => 14,
+        "port_busy" => 15,
         "invalid_image" => 20,
         _ => 1,
     }

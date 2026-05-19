@@ -5,7 +5,9 @@
 //! OS exposes both as the same /dev/cu.* or COM* device. The reset strategy
 //! choice (see `crate::reset`) is what differs based on USB VID/PID.
 
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serialport::{ClearBuffer, SerialPort};
@@ -23,6 +25,62 @@ pub struct SerialTransport {
     /// downcast `Box<dyn SerialPort>` later.
     #[cfg(unix)]
     fd: std::os::fd::RawFd,
+    /// `flock`-locked sidecar file that prevents a second `esparagus`
+    /// process from acquiring the same port concurrently. The kernel
+    /// releases the lock automatically when this `File` is dropped, so we
+    /// just need to keep it alive for the lifetime of the transport.
+    _port_lock: File,
+}
+
+/// Path of the sidecar lockfile we flock to serialise access to a serial
+/// port. Deterministic for the same `port` so two processes converge on
+/// the same lockfile. Uses `std::env::temp_dir()` so this works on Linux,
+/// macOS, and Windows without a privileged `/var/lock`.
+fn port_lockfile_path(port: &str) -> PathBuf {
+    // Sanitise path separators and Windows-forbidden characters so the
+    // lockfile name is a single safe filename regardless of OS.
+    let safe: String = port
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*' => '_',
+            c => c,
+        })
+        .collect();
+    std::env::temp_dir().join(format!("esparagus.{}.lock", safe))
+}
+
+/// Try to take the per-port flock. Returns the opened `File` (which the
+/// caller must keep alive to hold the lock) or a `PortBusy` error if
+/// another esparagus is already holding it.
+fn acquire_port_lock(port: &str) -> Result<File> {
+    use fs4::{FileExt, TryLockError};
+    let lock_path = port_lockfile_path(port);
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .read(true)
+        .open(&lock_path)
+        .map_err(|e| {
+            Error::Other(format!(
+                "could not open port lockfile {:?}: {}",
+                lock_path, e
+            ))
+        })?;
+    match FileExt::try_lock(&file) {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(Error::PortBusy {
+            port: port.into(),
+            detail: format!(
+                "lockfile {} is held by another esparagus instance",
+                lock_path.display()
+            ),
+        }),
+        Err(TryLockError::Error(e)) => Err(Error::PortBusy {
+            port: port.into(),
+            detail: format!("flock on {} failed: {}", lock_path.display(), e),
+        }),
+    }
 }
 
 impl SerialTransport {
@@ -30,12 +88,21 @@ impl SerialTransport {
     ///
     /// `path` is the OS-level device path (`/dev/cu.usbserial-XYZ`, `COM5`).
     pub fn open(path: &str, baud: u32) -> Result<Self> {
+        // First gate: the cross-platform advisory flock. Fails fast if
+        // another esparagus process is already using this port.
+        let port_lock = acquire_port_lock(path)?;
+
         let builder = serialport::new(path, baud)
             .timeout(Duration::from_millis(100))
             .data_bits(serialport::DataBits::Eight)
             .stop_bits(serialport::StopBits::One)
             .parity(serialport::Parity::None)
-            .flow_control(serialport::FlowControl::None);
+            .flow_control(serialport::FlowControl::None)
+            // Second gate: kernel-level TIOCEXCL on Unix. Stops a `screen`
+            // / `minicom` / `cu` / debugger that isn't going through our
+            // lockfile from racing us on the wire. On Windows this is a
+            // no-op; the Win32 driver naturally serialises opens.
+            .exclusive(true);
 
         let (vid, pid) = match probe_vid_pid(path) {
             Some((v, p)) => (Some(v), Some(p)),
@@ -66,6 +133,7 @@ impl SerialTransport {
             pid,
             #[cfg(unix)]
             fd,
+            _port_lock: port_lock,
         };
 
         // Per upstream esptool: on Windows, drive DTR/RTS to false before

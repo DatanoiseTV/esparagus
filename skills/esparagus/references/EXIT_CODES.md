@@ -16,6 +16,7 @@ numeric code alone, then read the report's `errors[0].class` and
 | 12 | Chip mismatch | `--chip` was set but the chip on the wire is a different family. |
 | 13 | Flash operation failed | Includes MD5 mismatch on a write, erase failure, status byte non-zero from the bootloader/stub. |
 | 14 | Stub loader upload or handshake failed | Stub didn't emit OHAI after MEM_END. Often retries are pointless; try `--no-stub`. |
+| 15 | Port held by another process | A second `esparagus` is racing for the same port (flock on `<tmpdir>/esparagus.<safe-port>.lock` is held), or `screen` / `minicom` / a debugger has the OS file descriptor exclusively via TIOCEXCL. Wait, kill the other consumer, or close the other terminal. |
 | 20 | Image header invalid | A file passed to a flash op or `elf2image` doesn't look like an ESP image. |
 | 30 | Monitor `--expect-not` pattern matched | Firmware emitted a forbidden line. |
 | 31 | Monitor timed out | The hard `--timeout` ceiling was reached and no `--expect` had matched. |
@@ -40,6 +41,26 @@ The chip didn't respond to sync packets.
   {"kind":"different_reset_mode","desc":"Pass --before usb-reset if the board has a native USB-Serial/JTAG."}
 ]
 ```
+
+### `port_busy`
+
+The port is already opened by another process — either another
+`esparagus` (the flock on the sidecar lockfile is held), or a
+non-esparagus consumer like `screen` / `minicom` / a debugger that
+serialport's `.exclusive(true)` (TIOCEXCL on Unix) rejected.
+
+```json
+"next_actions": [
+  {"kind":"wait_other_instance",
+   "desc":"Another esparagus instance is using this port. Wait for it to finish or kill it."},
+  {"kind":"close_other_users",
+   "desc":"If you have screen / minicom / a serial monitor on this port, close it."}
+]
+```
+
+The `detail` field always names the lockfile path so you can map back
+to which process is holding it (`fuser` / `lsof` on the lockfile path
+will identify the PID on Linux/macOS).
 
 ### `port`
 

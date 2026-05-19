@@ -16,6 +16,9 @@ pub enum Error {
         source: serialport::Error,
     },
 
+    #[error("port {port:?} is in use by another process ({detail})")]
+    PortBusy { port: String, detail: String },
+
     #[error("invalid SLIP framing: {0}")]
     Slip(&'static str),
 
@@ -71,6 +74,7 @@ impl Error {
         match self {
             Error::Io(_) => "io",
             Error::Serial(_) | Error::OpenPort { .. } => "port",
+            Error::PortBusy { .. } => "port_busy",
             Error::Slip(_) => "slip",
             Error::ResponseMismatch { .. } => "response_mismatch",
             Error::UnsupportedCommand { .. } => "unsupported_command",

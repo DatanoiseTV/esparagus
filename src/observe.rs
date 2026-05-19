@@ -805,6 +805,16 @@ pub mod hints {
                     desc: "Pass --before usb-reset if the board has a native USB-Serial/JTAG.",
                 },
             ],
+            "port_busy" => &[
+                NextAction {
+                    kind: "wait_other_instance",
+                    desc: "Another esparagus instance is using this port. Wait for it to finish or kill it.",
+                },
+                NextAction {
+                    kind: "close_other_users",
+                    desc: "If you have screen / minicom / a serial monitor on this port, close it.",
+                },
+            ],
             "port" => {
                 if detail.contains("Permission denied")
                     || detail.contains("Access is denied")
