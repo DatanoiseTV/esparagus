@@ -93,9 +93,12 @@ pub enum Command {
     FlashId,
 
     /// Read EFUSE: dump the BLOCK0-1 region as 32-bit words, plus
-    /// decoded common fields (BASE_MAC, chip revision). EFUSE *burn*
-    /// is intentionally not implemented (one-way fuses; out of scope
-    /// for the v1 release — use `espefuse.py` for burning).
+    /// decoded common fields (BASE_MAC, chip revision). With
+    /// `--summary`, also walks every `show: y` field from the bundled
+    /// upstream YAML definitions and prints name/value/description —
+    /// espefuse-style. EFUSE *burn* is intentionally not implemented
+    /// (one-way fuses; out of scope for the v1 release — use
+    /// `espefuse.py` for burning).
     #[command(name = "read-efuse", alias = "efuse-read", alias = "efuse_read")]
     ReadEfuse {
         /// How many 32-bit words to dump starting from EFUSE_BASE.
@@ -104,6 +107,13 @@ pub enum Command {
         /// the unused window beyond the implemented blocks reads as 0.
         #[arg(long, default_value_t = 64)]
         words: u32,
+        /// Also decode every field marked `show: y` in the bundled
+        /// upstream YAML (BLOCK0 + BLOCK1 / BLOCK2 fields that have a
+        /// public spec). For each field, prints name, value, and a
+        /// one-line description. The full field set is ~30-50 per
+        /// chip — pipe to `less` or filter with `grep`.
+        #[arg(long)]
+        summary: bool,
     },
 
     /// Erase the entire flash chip (stub required).

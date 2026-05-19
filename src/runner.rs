@@ -889,7 +889,7 @@ fn run_inner(
                 size_mb: ops::flash_size_mb_from_id(id),
             });
         }
-        Command::ReadEfuse { words } => {
+        Command::ReadEfuse { words, summary } => {
             // Cap at 256 words (1 KB) — the unused part of the EFUSE
             // peripheral window reads as 0 / "all-ones" depending on
             // chip; nothing useful is past block 4 on any current
@@ -914,6 +914,18 @@ fn run_inner(
                 base: format!("{:#010x}", chip.efuse_base),
                 words: buf,
             });
+            if *summary {
+                match crate::efuse::read_summary(&mut conn, chip)? {
+                    Some(fields) => emitter.info(Event::EfuseSummary { fields }),
+                    None => emitter.warn(Event::Warning {
+                        message: format!(
+                            "no bundled efuse definitions for chip {:?}; \
+                             upstream esptool YAML not yet included",
+                            chip.name
+                        ),
+                    }),
+                }
+            }
         }
         Command::EraseFlash => {
             let g = report.start_stage("erase_flash");

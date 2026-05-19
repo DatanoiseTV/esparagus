@@ -340,14 +340,15 @@ fn tool_catalog() -> Vec<Value> {
     }));
     tools.push(json!({
         "name": "read_efuse",
-        "description": "Read EFUSE BLOCK0+BLOCK1 as 32-bit words + decoded BASE_MAC and (for chips with a known formula) silicon revision. Read-only; EFUSE burn is intentionally not exposed.",
+        "description": "Read EFUSE BLOCK0+BLOCK1 as 32-bit words + decoded BASE_MAC and silicon revision (every chip in the registry). With `summary=true`, also decodes every `show: y` field from the bundled upstream YAML definitions (espefuse-style summary). Read-only; EFUSE burn is intentionally not exposed.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "port": port_prop,
                 "baud": baud_prop,
                 "chip": chip_prop,
-                "words": {"type": "integer", "default": 64, "description": "How many 32-bit words to dump."}
+                "words": {"type": "integer", "default": 64, "description": "How many 32-bit words to dump."},
+                "summary": {"type": "boolean", "default": false, "description": "Decode every show:y field from upstream YAML."}
             },
             "additionalProperties": false
         }
@@ -627,6 +628,13 @@ fn tool_to_cli(name: &str, args: &Value) -> Result<Vec<String>, String> {
             if let Some(n) = args.get("words").and_then(|v| v.as_u64()) {
                 argv.push("--words".into());
                 argv.push(n.to_string());
+            }
+            if args
+                .get("summary")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                argv.push("--summary".into());
             }
         }
         "reset" => argv.push("reset".into()),

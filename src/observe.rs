@@ -75,6 +75,11 @@ pub enum Event {
         /// `--words` count.
         words: Vec<u32>,
     },
+    EfuseSummary {
+        /// Per-field decoded entries from the upstream YAML
+        /// definitions. Ordered as in the source file.
+        fields: Vec<crate::efuse::DecodedField>,
+    },
     WriteBegin {
         addr: String,
         size: u64,
@@ -454,6 +459,33 @@ fn human(e: &LoggedEvent, c: bool) -> String {
             )
         ),
         Event::MacRead { mac } => format!("{} MAC {}", ts, bold(mac, c)),
+        Event::EfuseSummary { fields } => {
+            let mut lines = vec![format!("{} EFUSE summary ({} fields)", ts, fields.len())];
+            for f in fields {
+                let value = match &f.bytes_hex {
+                    Some(hex) => format!("0x{hex}"),
+                    None => match (f.kind.as_str(), f.value) {
+                        ("bool", 0) => "false".into(),
+                        ("bool", _) => "true".into(),
+                        _ => format!("{} ({:#x})", f.value, f.value),
+                    },
+                };
+                let mapped = f
+                    .mapped
+                    .as_ref()
+                    .map(|m| format!(" [{m}]"))
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "{}   {} = {}{}  // {}",
+                    ts,
+                    cyan(&f.name, c),
+                    value,
+                    mapped,
+                    f.desc
+                ));
+            }
+            lines.join("\n")
+        }
         Event::EfuseRead {
             mac,
             chip_rev,

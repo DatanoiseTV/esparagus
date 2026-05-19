@@ -101,6 +101,248 @@ struct EfuseBlocks {
 // Per-chip silicon revision
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Full-summary decoder driven by upstream YAML efuse_defs
+// ---------------------------------------------------------------------------
+
+/// One decoded EFUSE field as it appears in the summary output.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DecodedField {
+    /// Mnemonic from upstream YAML (e.g. `SECURE_BOOT_EN`).
+    pub name: String,
+    /// Block index (0..3 for BLOCK0..BLOCK3).
+    pub block: u8,
+    /// Bit offset within the block.
+    pub bit_offset: u16,
+    /// Field width in bits.
+    pub bit_len: u16,
+    /// Raw integer value (interpretation depends on type).
+    pub value: u64,
+    /// Hex string for fields wider than 64 bits (`bytes:N` types).
+    /// When `value` is enough (≤ 64 bits), this is `None`.
+    pub bytes_hex: Option<String>,
+    /// Type string from upstream YAML (`bool`, `uint:N`, `bytes:N`).
+    pub kind: String,
+    /// Mapped textual value if the field has a `dict` enum (e.g. `1` →
+    /// `"Enable"`). `None` when no enum applies.
+    pub mapped: Option<String>,
+    /// One-line description from upstream YAML.
+    pub desc: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct YamlEfuseFile {
+    #[serde(rename = "EFUSES")]
+    efuses: indexmap::IndexMap<String, YamlEfuseEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct YamlEfuseEntry {
+    #[serde(default = "yes")]
+    show: String,
+    blk: u8,
+    #[allow(dead_code)]
+    word: u32,
+    #[allow(dead_code)]
+    pos: u32,
+    len: u32,
+    start: u32,
+    #[serde(rename = "type")]
+    type_: String,
+    #[serde(default)]
+    dict: String,
+    #[serde(default)]
+    desc: String,
+}
+
+fn yes() -> String {
+    "y".into()
+}
+
+/// Returns the bundled YAML text for the given chip name, or `None`
+/// if we don't have a definitions file for it.
+fn yaml_for_chip(chip_name: &str) -> Option<&'static str> {
+    Some(match chip_name {
+        "ESP32" => include_str!("../efuse_defs/esp32.yaml"),
+        "ESP32-S2" => include_str!("../efuse_defs/esp32s2.yaml"),
+        "ESP32-S3" => include_str!("../efuse_defs/esp32s3.yaml"),
+        "ESP32-C2" => include_str!("../efuse_defs/esp32c2.yaml"),
+        "ESP32-C3" => include_str!("../efuse_defs/esp32c3.yaml"),
+        "ESP32-C5" => include_str!("../efuse_defs/esp32c5.yaml"),
+        "ESP32-C6" => include_str!("../efuse_defs/esp32c6.yaml"),
+        "ESP32-C61" => include_str!("../efuse_defs/esp32c61.yaml"),
+        "ESP32-H2" => include_str!("../efuse_defs/esp32h2.yaml"),
+        "ESP32-H21" => include_str!("../efuse_defs/esp32h21.yaml"),
+        "ESP32-H4" => include_str!("../efuse_defs/esp32h4.yaml"),
+        "ESP32-P4" => include_str!("../efuse_defs/esp32p4.yaml"),
+        "ESP32-S31" => include_str!("../efuse_defs/esp32s31.yaml"),
+        _ => return None,
+    })
+}
+
+/// Parse an enum spec like `{0: "Disable", 1: "Enable", 3: "Disable"}`
+/// (Python-style stringified dict used by upstream YAML). Returns
+/// `Vec<(u64, String)>`.
+fn parse_dict(s: &str) -> Vec<(u64, String)> {
+    let s = s.trim().trim_start_matches('{').trim_end_matches('}');
+    let mut out = Vec::new();
+    for part in s.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let mut it = part.splitn(2, ':');
+        let key = it.next().unwrap_or("").trim();
+        let val = it.next().unwrap_or("").trim().trim_matches('"');
+        if let Ok(k) = key.parse::<u64>() {
+            out.push((k, val.to_string()));
+        }
+    }
+    out
+}
+
+/// Read enough bytes from `block` (starting at its base register
+/// address) to cover the requested bit range.  We round up to whole
+/// 32-bit words and read sequentially.
+fn read_block_bytes(
+    conn: &mut Connection,
+    block_base: u32,
+    bit_offset: u32,
+    bit_len: u32,
+) -> Result<Vec<u8>> {
+    let last_bit = bit_offset + bit_len;
+    let last_word = last_bit.div_ceil(32);
+    let mut bytes: Vec<u8> = Vec::with_capacity((last_word as usize) * 4);
+    for w in 0..last_word {
+        let v = conn.read_reg(block_base + 4 * w)?;
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
+/// Extract a bit-range as a little-endian integer from the given
+/// little-endian byte buffer. Caller guarantees `start + len` ≤
+/// `bytes.len() * 8`.
+fn extract_bits_u64(bytes: &[u8], start: u32, len: u32) -> u64 {
+    let mut out: u64 = 0;
+    for i in 0..len {
+        let bit = start + i;
+        let byte = bytes[(bit / 8) as usize];
+        let b = (byte >> (bit % 8)) & 1;
+        out |= (b as u64) << i;
+    }
+    out
+}
+
+/// Extract a wider bit-range as raw bytes (for `bytes:N` fields). The
+/// returned vector is little-endian byte order, length = ceil(len/8).
+fn extract_bits_bytes(bytes: &[u8], start: u32, len: u32) -> Vec<u8> {
+    let nbytes = (len as usize).div_ceil(8);
+    let mut out = vec![0u8; nbytes];
+    for i in 0..len {
+        let bit = start + i;
+        let byte = bytes[(bit / 8) as usize];
+        let b = (byte >> (bit % 8)) & 1;
+        out[(i / 8) as usize] |= b << (i % 8);
+    }
+    out
+}
+
+/// Decode every `show: y` field from the upstream YAML for `chip`
+/// against the live EFUSE peripheral. Returns `None` (with no error)
+/// for chips we don't bundle a definitions file for.
+///
+/// Reads each referenced block on demand; tries up to 4 blocks
+/// (BLOCK0..3). Fields beyond BLOCK3 are skipped (we don't currently
+/// know per-chip BLOCK4-10 addresses).
+pub fn read_summary(conn: &mut Connection, chip: &Chip) -> Result<Option<Vec<DecodedField>>> {
+    let Some(yaml_text) = yaml_for_chip(chip.name) else {
+        return Ok(None);
+    };
+    let parsed: YamlEfuseFile = serde_yml::from_str(yaml_text)
+        .map_err(|e| Error::Other(format!("parse efuse YAML for {}: {}", chip.name, e)))?;
+    let b = block_bases(chip)?;
+    let blocks: [Option<u32>; 4] = [
+        Some(b.block0),
+        Some(b.block1),
+        if b.block2 != 0 { Some(b.block2) } else { None },
+        // BLOCK3 base differs per chip — for now we skip it. The
+        // critical security fields all live in BLOCK0.
+        None,
+    ];
+
+    // Cache the per-block byte reads — most BLOCK0 fields overlap.
+    let mut block_bytes: [Option<Vec<u8>>; 4] = [None, None, None, None];
+    let mut out: Vec<DecodedField> = Vec::new();
+    for (name, entry) in &parsed.efuses {
+        if entry.show != "y" {
+            continue;
+        }
+        if (entry.blk as usize) >= blocks.len() {
+            continue;
+        }
+        let Some(base) = blocks[entry.blk as usize] else {
+            continue;
+        };
+        // Block-relative bit offset (the upstream YAML's `start` is
+        // already bits within the block).
+        let bit_off = entry.start;
+        let bit_len = entry.len;
+
+        // Lazily read the block (enough bytes to cover this field).
+        let cached_len = block_bytes[entry.blk as usize]
+            .as_ref()
+            .map(|v| v.len() as u32 * 8)
+            .unwrap_or(0);
+        if cached_len < bit_off + bit_len {
+            let need = read_block_bytes(conn, base, bit_off, bit_len)?;
+            // Keep whichever is longer.
+            if need.len() as u32 * 8 > cached_len {
+                block_bytes[entry.blk as usize] = Some(need);
+            }
+        }
+        let bytes = block_bytes[entry.blk as usize].as_ref().unwrap();
+
+        // Parse the type tag.
+        let (kind, is_bytes) = match entry.type_.as_str() {
+            "bool" => ("bool".to_string(), false),
+            t if t.starts_with("uint:") => (t.to_string(), false),
+            t if t.starts_with("bytes:") => (t.to_string(), true),
+            t => (t.to_string(), false),
+        };
+
+        let (value, bytes_hex) = if is_bytes || bit_len > 64 {
+            let v = extract_bits_bytes(bytes, bit_off, bit_len);
+            (0u64, Some(hex::encode(&v)))
+        } else {
+            (extract_bits_u64(bytes, bit_off, bit_len), None)
+        };
+
+        let mapped = if !entry.dict.is_empty() && bytes_hex.is_none() {
+            let table = parse_dict(&entry.dict);
+            table
+                .iter()
+                .find(|(k, _)| *k == value)
+                .map(|(_, v)| v.clone())
+        } else {
+            None
+        };
+
+        out.push(DecodedField {
+            name: name.clone(),
+            block: entry.blk,
+            bit_offset: bit_off as u16,
+            bit_len: bit_len as u16,
+            value,
+            bytes_hex,
+            kind,
+            mapped,
+            desc: entry.desc.clone(),
+        });
+    }
+    Ok(Some(out))
+}
+
 /// Read the silicon revision (major + minor) from EFUSE.
 ///
 /// Returns `Error::Other` for chip names not in the decoder table.
@@ -407,6 +649,81 @@ mod tests {
     fn esp32_p4_decoder_zero() {
         // All-zero word → (0,0).
         assert_eq!(decode_esp32_p4(0), (0, 0));
+    }
+
+    #[test]
+    fn yaml_definitions_parse_for_every_chip() {
+        // Every chip with a bundled YAML file must parse cleanly and
+        // contain a non-empty `EFUSES` mapping. Catches a corrupt
+        // copy or upstream format change at unit-test time.
+        for chip in [
+            "ESP32",
+            "ESP32-S2",
+            "ESP32-S3",
+            "ESP32-C2",
+            "ESP32-C3",
+            "ESP32-C5",
+            "ESP32-C6",
+            "ESP32-C61",
+            "ESP32-H2",
+            "ESP32-H21",
+            "ESP32-H4",
+            "ESP32-P4",
+            "ESP32-S31",
+        ] {
+            let yaml = yaml_for_chip(chip).expect("yaml present");
+            let parsed: YamlEfuseFile =
+                serde_yml::from_str(yaml).unwrap_or_else(|e| panic!("{chip}: {e}"));
+            assert!(
+                !parsed.efuses.is_empty(),
+                "{chip}: parsed EFUSES map is empty"
+            );
+            // Sanity: WR_DIS field should exist on every chip (it's
+            // BLOCK0 word 0, the universal write-protect mask).
+            assert!(
+                parsed.efuses.contains_key("WR_DIS"),
+                "{chip}: WR_DIS missing"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_bits_u64_basic() {
+        // bytes = [0xAB, 0xCD, 0xEF, 0x00] = little-endian 0x00EFCDAB
+        let bytes = [0xABu8, 0xCD, 0xEF, 0x00];
+        // bits 0..4 → 0xB
+        assert_eq!(extract_bits_u64(&bytes, 0, 4), 0xB);
+        // bits 4..8 → 0xA
+        assert_eq!(extract_bits_u64(&bytes, 4, 4), 0xA);
+        // bits 8..16 → 0xCD
+        assert_eq!(extract_bits_u64(&bytes, 8, 8), 0xCD);
+        // bits 0..32 → full LE u32
+        assert_eq!(extract_bits_u64(&bytes, 0, 32), 0x00EFCDAB);
+    }
+
+    #[test]
+    fn extract_bits_bytes_round_trip() {
+        // 16 bits at offset 4 of [0x00, 0xAB, 0xCD, 0x00]:
+        // skip 4 bits, take next 16. bits[4..20] of LE-bitstream
+        // (0x00ABCD00 LE = bits 0xAB in byte 1, 0xCD in byte 2).
+        let bytes = [0x00, 0xAB, 0xCD, 0x00];
+        let out = extract_bits_bytes(&bytes, 4, 16);
+        // Verify byte-level
+        assert_eq!(out.len(), 2);
+        // bit 4 of source = bit 4 of byte0 = 0; bit 12 = bit 4 of byte1 = (0xAB >> 4 & 1) = 0
+        // Easiest sanity: re-extract as u64 should match
+        assert_eq!(
+            extract_bits_u64(&bytes, 4, 16),
+            extract_bits_u64(&out, 0, 16)
+        );
+    }
+
+    #[test]
+    fn parse_dict_handles_python_style() {
+        let d = parse_dict("{0: \"Disable\", 1: \"Enable\", 3: \"Disable\", 7: \"Enable\"}");
+        assert_eq!(d.len(), 4);
+        assert_eq!(d[0], (0, "Disable".to_string()));
+        assert_eq!(d[1], (1, "Enable".to_string()));
     }
 
     #[test]
