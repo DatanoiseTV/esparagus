@@ -95,6 +95,7 @@ pub fn run(cli: Cli) -> i32 {
     // (we explicitly do NOT want to enter the ROM bootloader — we want the
     // chip running its firmware).
     if let Command::Monitor {
+        monitor_baud,
         timeout,
         expect,
         expect_not,
@@ -104,7 +105,7 @@ pub fn run(cli: Cli) -> i32 {
     {
         return run_monitor(
             &port,
-            cli.baud,
+            *monitor_baud,
             *timeout,
             expect,
             expect_not,
@@ -140,10 +141,9 @@ pub fn run(cli: Cli) -> i32 {
         // Give the OS a moment to release the port (some macOS / Linux
         // bridges hold the file descriptor briefly after close).
         std::thread::sleep(std::time::Duration::from_millis(150));
-        let mb = monitor_baud.unwrap_or(cli.baud);
         return run_monitor(
             &port,
-            mb,
+            *monitor_baud,
             *timeout,
             expect,
             expect_not,

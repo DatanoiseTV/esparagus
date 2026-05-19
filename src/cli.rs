@@ -256,12 +256,12 @@ pub enum Command {
         /// Pairs of (address, file). Same syntax as `write-flash`.
         #[arg(required = true, num_args = 2..)]
         args: Vec<String>,
-        /// Baud rate to use for the monitor phase. Useful when firmware
-        /// runs its UART at a different rate than the bootloader (e.g.
-        /// flash at 460800, but the app printk()s at 115200). Defaults
-        /// to the global --baud.
-        #[arg(long)]
-        monitor_baud: Option<u32>,
+        /// Baud rate to use for the monitor phase. Defaults to
+        /// **115200** (ESP-IDF default app-console baud) since the
+        /// global `--baud` is the *flashing* rate, which the running
+        /// firmware almost never uses.
+        #[arg(long, default_value_t = 115_200)]
+        monitor_baud: u32,
         /// Monitor: hard ceiling on listen time (0 = forever).
         #[arg(long, default_value_t = 60)]
         timeout: u64,
@@ -305,6 +305,14 @@ pub enum Command {
     /// match, or 31 on timeout.  Designed to chain after `write-flash`
     /// in a CI / LLM feedback loop.
     Monitor {
+        /// Baud rate for the monitor session. Defaults to **115200**
+        /// (the ESP-IDF default app-console baud) rather than the
+        /// global `--baud`, because the latter is the post-sync
+        /// flashing baud, which the running firmware almost never
+        /// uses. Override here when your firmware printk()s at a
+        /// non-default rate.
+        #[arg(long = "monitor-baud", default_value_t = 115_200)]
+        monitor_baud: u32,
         /// Hard ceiling on total monitor time. 0 = run forever.
         #[arg(long, default_value_t = 60)]
         timeout: u64,

@@ -529,6 +529,7 @@ fn tool_catalog() -> Vec<Value> {
             "properties": {
                 "port":             port_prop,
                 "baud":             baud_prop,
+                "monitor_baud":     {"type": "integer", "default": 115200, "description": "Baud for the monitor session (NOT the flashing baud). Defaults to 115200 — the ESP-IDF default app-console rate."},
                 "timeout":          {"type": "integer", "default": 60, "description": "Hard ceiling in seconds. 0 = forever."},
                 "expect":           {"type": "array", "items": {"type": "string"}, "default": [], "description": "Success regexes."},
                 "expect_not":       {"type": "array", "items": {"type": "string"}, "default": [], "description": "Failure regexes."},
@@ -546,7 +547,7 @@ fn tool_catalog() -> Vec<Value> {
             "properties": {
                 "port":             port_prop,
                 "baud":             baud_prop,
-                "monitor_baud":     {"type": ["integer", "null"], "description": "Baud for the monitor phase (defaults to --baud)."},
+                "monitor_baud":     {"type": "integer", "default": 115200, "description": "Baud for the monitor phase. Defaults to 115200 (ESP-IDF app-console default), not the flashing --baud."},
                 "no_compress":      {"type": "boolean", "default": false},
                 "timeout":          {"type": "integer", "default": 60},
                 "expect":           {"type": "array", "items": {"type": "string"}, "default": []},
@@ -756,10 +757,6 @@ fn tool_to_cli(name: &str, args: &Value) -> Result<Vec<String>, String> {
         }
         "flash_monitor" => {
             argv.push("flash-monitor".into());
-            if let Some(n) = args.get("monitor_baud").and_then(|v| v.as_u64()) {
-                argv.push("--monitor-baud".into());
-                argv.push(n.to_string());
-            }
             if args
                 .get("no_compress")
                 .and_then(|v| v.as_bool())
@@ -814,6 +811,10 @@ fn append_pairs(argv: &mut Vec<String>, args: &Value) -> Result<(), String> {
 }
 
 fn append_monitor_flags(argv: &mut Vec<String>, args: &Value) {
+    if let Some(n) = args.get("monitor_baud").and_then(|v| v.as_u64()) {
+        argv.push("--monitor-baud".into());
+        argv.push(n.to_string());
+    }
     if let Some(n) = args.get("timeout").and_then(|v| v.as_u64()) {
         argv.push("--timeout".into());
         argv.push(n.to_string());
