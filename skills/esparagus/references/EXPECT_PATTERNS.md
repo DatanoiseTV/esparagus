@@ -99,6 +99,7 @@ esparagus:
 | `Cache disabled but cached memory region accessed` | `cache` | ESP cache fault |
 | `Brownout detector was triggered` | `brownout` | ROM brownout |
 | `boot:0x.. \(DOWNLOAD` | `download_loop` | Chip dropped into ROM DOWNLOAD mode after reset — i.e. the freshly-written firmware isn't actually booting. Often means the BOOT strap is held low (auto-reset circuit, faulty boot button) or the image at the app offset is invalid. |
+| `^ESP-ROM:` (stateful, ≥2 hits per monitor session) | `reboot_loop` | Chip is rebooting in a tight loop. First ROM banner is expected (our own reset_to_app produced it); the second means the second-stage bootloader / app reset on its own. Boot mode is normal (e.g. `SPI_FAST_FLASH_BOOT`) — the chip just doesn't make it far enough to print any app log. Usual causes: brownout during RF init, panic in `app_main` precursors before `esp_log` is wired, IDF version skew between bootloader and app. Distinct from `download_loop`. |
 
 The patterns are checked in this order; the first match wins.
 

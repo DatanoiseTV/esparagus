@@ -162,6 +162,19 @@ pub fn run(
     // None = no crash in progress; Some((kind, started_at, ctx_lines)) when
     // capturing a crash context post-detection.
     let mut crash_ctx: Option<(&'static str, Instant, Vec<String>)> = None;
+    // Reboot-loop detector state: count how many times we've seen the
+    // ROM banner (e.g. "ESP-ROM:esp32c5-..."). The first banner is
+    // expected from our own reset_to_app pulse at start. The *second*
+    // means the bootloader / app rebooted on its own — which is the
+    // "second-stage bootloader runs, jumps to entry, immediate reset
+    // before any app log" failure pattern. Distinct from `download_loop`:
+    // here the chip is in SPI_FAST_FLASH_BOOT mode, just rebooting.
+    let rom_banner_re = if !no_crash_detect {
+        Some(Regex::new(r"^ESP-ROM:").expect("static regex compiles"))
+    } else {
+        None
+    };
+    let mut rom_banner_count: u32 = 0;
 
     loop {
         let now = Instant::now();
@@ -247,6 +260,26 @@ pub fn run(
                         return Ok(Outcome::ExpectNotMatch);
                     }
                 }
+                // Reboot-loop detector. The first ROM banner is expected
+                // (our own reset_to_app produced it); the second is the
+                // chip rebooting on its own. Distinct from `download_loop`:
+                // boot mode is normal (e.g. SPI_FAST_FLASH_BOOT) but the
+                // app never makes it far enough to print.
+                if let Some(re) = &rom_banner_re {
+                    if re.is_match(&line) {
+                        rom_banner_count += 1;
+                        if rom_banner_count >= 2 && crash_ctx.is_none() {
+                            emitter.error(Event::CrashDetected {
+                                kind: "reboot_loop",
+                                pattern: re.as_str().into(),
+                                line: line.clone(),
+                            });
+                            crash_ctx = Some(("reboot_loop", Instant::now(), vec![line.clone()]));
+                            continue;
+                        }
+                    }
+                }
+
                 // Built-in crash detector. On match, switch into context
                 // capture mode — we keep reading until a sentinel or the
                 // budget is reached, then emit and exit.
@@ -405,6 +438,21 @@ mod tests {
         assert!(CRASH_END_SENTINELS
             .iter()
             .any(|s| "Rebooting...".contains(s)));
+    }
+
+    /// `reboot_loop` is stateful — fires after the second ROM-banner
+    /// occurrence in a monitor session — so the per-line classifier
+    /// alone doesn't classify it. Test the stateful behavior via the
+    /// `Regex::is_match` on the canonical regex string.
+    #[test]
+    fn rom_banner_pattern_matches_real_lines() {
+        let re = Regex::new(r"^ESP-ROM:").unwrap();
+        assert!(re.is_match("ESP-ROM:esp32c5-eco2-20250121"));
+        assert!(re.is_match("ESP-ROM:esp32p4-eco2-20240710"));
+        assert!(re.is_match("ESP-ROM:esp32s3-20210327"));
+        // Doesn't false-match a normal log line that happens to mention
+        // the string mid-line.
+        assert!(!re.is_match("I (1234) main: ESP-ROM info goes here"));
     }
 
     /// Verbatim ROM boot announcement when the chip drops into download
