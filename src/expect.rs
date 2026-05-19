@@ -302,13 +302,31 @@ fn find_subseq(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// Execute the script against the given port at `baud`. Emits NDJSON
 /// `expect_*` events and the existing `crash_detected` /
 /// `crash_context` events. Returns the outcome class.
-#[allow(clippy::too_many_arguments)]
 pub fn run(
     script: Script,
     port: &str,
     baud: u32,
     emitter: &Emitter,
     no_reset: bool,
+    no_crash_detect: bool,
+) -> Result<Outcome> {
+    let mut transport = SerialTransport::open(port, baud)?;
+    if !no_reset {
+        // Same reasoning as monitor.rs: reset cleanly to app boot so we
+        // start the expect run from a known state (CH343 + USB-JTAG
+        // gotcha — see docs).
+        let _ = reset::reset_to_app(&mut transport);
+    }
+    run_with_transport(script, &mut transport, emitter, no_crash_detect)
+}
+
+/// Pure runtime: execute the script against any `Transport`. Doesn't
+/// open ports or reset the chip — caller owns lifecycle.  This is the
+/// integration-test entry point (mock transport in unit tests).
+pub fn run_with_transport(
+    script: Script,
+    transport: &mut dyn Transport,
+    emitter: &Emitter,
     no_crash_detect: bool,
 ) -> Result<Outcome> {
     let crash_patterns: Vec<(Regex, &'static str)> = if no_crash_detect {
@@ -320,19 +338,10 @@ pub fn run(
             .collect()
     };
 
-    let mut transport = SerialTransport::open(port, baud)?;
-
     emitter.info(Event::ExpectScriptStart {
         name: script.name.clone(),
         step_count: script.steps.len(),
     });
-
-    if !no_reset {
-        // Same reasoning as monitor.rs: reset cleanly to app boot so we
-        // start the expect run from a known state (CH343 + USB-JTAG
-        // gotcha — see docs).
-        let _ = reset::reset_to_app(&mut transport);
-    }
 
     let by_name: HashMap<String, usize> = script
         .steps
@@ -410,7 +419,18 @@ pub fn run(
             return Ok(outcome);
         }
 
-        // 4. Read lines until match / timeout / crash. Re-use the
+        // 4. If this is a send-only step with nothing to wait for
+        // (no expect, no expect_any, no expect_not), there's nothing
+        // to read for — advance to the next step immediately rather
+        // than burning the step's timeout doing nothing useful. This
+        // is the "fire and continue" idiom (e.g. send a setup line
+        // whose output is consumed by the next step's expect).
+        if matches!(mode, Mode::None) && expect_not_re.is_none() {
+            idx += 1;
+            continue;
+        }
+
+        // 5. Read lines until match / timeout / crash. Re-use the
         //    monitor's line-buffering + crash detection.
         let deadline = Instant::now() + step_timeout;
         let mut buf = [0u8; 1024];
@@ -533,7 +553,7 @@ pub fn run(
                         }
                         Mode::Single(re, pattern) => {
                             if let Some(caps) = re.captures(&line) {
-                                record_captures(&caps, &mut vars);
+                                record_captures(re, &caps, &mut vars);
                                 run_step_capture_table(&step, &line, &mut vars);
                                 emitter.info(Event::ExpectStepMatch {
                                     name: label.clone(),
@@ -547,7 +567,7 @@ pub fn run(
                         Mode::Any(branches) => {
                             for (re, target) in branches {
                                 if let Some(caps) = re.captures(&line) {
-                                    record_captures(&caps, &mut vars);
+                                    record_captures(re, &caps, &mut vars);
                                     run_step_capture_table(&step, &line, &mut vars);
                                     emitter.info(Event::ExpectStepMatch {
                                         name: label.clone(),
@@ -640,25 +660,26 @@ pub fn run(
     Ok(Outcome::Ok)
 }
 
-/// Record numbered capture groups `$1`..`$N` from a regex match into
-/// `vars` for use in later template expansion (e.g. `{{1}}`).
-fn record_captures(caps: &regex::Captures, vars: &mut HashMap<String, String>) {
+/// Record capture groups from a regex match into `vars` for later
+/// template substitution.
+///
+///   * Numbered groups → `{{1}}`..`{{N}}`.
+///   * Named groups in the regex itself (e.g. `expect = "ip
+///     (?P<ip>\\d+\\.\\d+\\.\\d+\\.\\d+)"`) → `{{ip}}`.
+///
+/// The script's `capture = { name = "pattern" }` table is a separate,
+/// more explicit form layered on top of this (see
+/// `run_step_capture_table`).
+fn record_captures(re: &Regex, caps: &regex::Captures, vars: &mut HashMap<String, String>) {
     for i in 1..caps.len() {
         if let Some(m) = caps.get(i) {
             vars.insert(i.to_string(), m.as_str().to_string());
         }
     }
-    // Also record any *named* groups from the expect regex itself.
-    for name in caps
-        .iter()
-        .skip(1)
-        .filter_map(|_| None::<&str>)
-        .collect::<Vec<_>>()
-    {
-        // Unreachable — regex::Captures doesn't expose named groups
-        // generically via iter(); we leave named groups to the
-        // explicit `capture = { ... }` table below.
-        let _ = name;
+    for name in re.capture_names().flatten() {
+        if let Some(m) = caps.name(name) {
+            vars.insert(name.to_string(), m.as_str().to_string());
+        }
     }
 }
 
@@ -817,5 +838,266 @@ mod tests {
         assert_eq!(Outcome::ExpectNotFail.exit_code(), 13);
         assert_eq!(Outcome::Crash.exit_code(), 20);
         assert_eq!(Outcome::ParseError.exit_code(), 31);
+    }
+
+    // ----------------------------------------------------------------
+    // Runtime tests against a mock transport.
+    //
+    // The mock has a fixed RX script (bytes esparagus reads from "the
+    // chip") and captures TX (bytes esparagus writes "to the chip").
+    // Real timing is faked: every read of a non-empty RX returns
+    // immediately; reads after RX is drained return 0 (matching the
+    // `unwrap_or_default()` no-bytes-available path).
+    // ----------------------------------------------------------------
+
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use crate::transport::Transport;
+
+    struct MockTransport {
+        rx: Arc<Mutex<Vec<u8>>>,
+        tx: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Transport for MockTransport {
+        fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+            let mut rx = self.rx.lock().unwrap();
+            if rx.is_empty() {
+                // Match how SerialTransport behaves when no bytes are
+                // available within the timeout: error / 0 bytes. The
+                // expect loop treats both as "keep polling".
+                return Ok(0);
+            }
+            let n = buf.len().min(rx.len());
+            buf[..n].copy_from_slice(&rx[..n]);
+            rx.drain(..n);
+            Ok(n)
+        }
+        fn write(&mut self, data: &[u8]) -> Result<()> {
+            self.tx.lock().unwrap().extend_from_slice(data);
+            Ok(())
+        }
+        fn set_timeout(&mut self, _t: Duration) -> Result<()> {
+            Ok(())
+        }
+        fn set_baud(&mut self, _baud: u32) -> Result<()> {
+            Ok(())
+        }
+        fn flush_input(&mut self) -> Result<()> {
+            self.rx.lock().unwrap().clear();
+            Ok(())
+        }
+        fn flush_output(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn set_dtr(&mut self, _on: bool) -> Result<()> {
+            Ok(())
+        }
+        fn set_rts(&mut self, _on: bool) -> Result<()> {
+            Ok(())
+        }
+        fn port_name(&self) -> &str {
+            "<mock>"
+        }
+    }
+
+    fn mock_with_rx(bytes: &[u8]) -> (MockTransport, Arc<Mutex<Vec<u8>>>) {
+        let rx = Arc::new(Mutex::new(bytes.to_vec()));
+        let tx: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        (
+            MockTransport {
+                rx: rx.clone(),
+                tx: tx.clone(),
+            },
+            tx,
+        )
+    }
+
+    fn null_emitter() -> Emitter {
+        Emitter::new(false, None).expect("create stderr-only emitter")
+    }
+
+    #[test]
+    fn runtime_matches_single_expect() {
+        let script = parse(
+            r#"
+            timeout_secs = 2
+            [[step]]
+            expect = "MAIN LOOP READY"
+            "#,
+        )
+        .unwrap();
+        let (mut t, _tx) = mock_with_rx(b"booting...\nMAIN LOOP READY\nfoo\n");
+        let em = null_emitter();
+        let outcome = run_with_transport(script, &mut t, &em, true).unwrap();
+        assert_eq!(outcome, Outcome::Ok);
+    }
+
+    #[test]
+    fn runtime_times_out_on_no_match() {
+        let script = parse(
+            r#"
+            timeout_secs = 1
+            [[step]]
+            expect = "WILL NEVER ARRIVE"
+            timeout_secs = 1
+            "#,
+        )
+        .unwrap();
+        let (mut t, _tx) = mock_with_rx(b"hello\nworld\n");
+        let em = null_emitter();
+        let outcome = run_with_transport(script, &mut t, &em, true).unwrap();
+        assert_eq!(outcome, Outcome::ExpectFail);
+    }
+
+    #[test]
+    fn runtime_sends_with_template_expansion() {
+        std::env::set_var("EXPECT_TEST_PW", "s3cret");
+        let script = parse(
+            r#"
+            timeout_secs = 2
+            [[step]]
+            send = "auth {{env.EXPECT_TEST_PW}}\n"
+            expect = "ok"
+            "#,
+        )
+        .unwrap();
+        let (mut t, tx) = mock_with_rx(b"ok\n");
+        let em = null_emitter();
+        let outcome = run_with_transport(script, &mut t, &em, true).unwrap();
+        assert_eq!(outcome, Outcome::Ok);
+        let written = String::from_utf8(tx.lock().unwrap().clone()).unwrap();
+        assert_eq!(written, "auth s3cret\n");
+        std::env::remove_var("EXPECT_TEST_PW");
+    }
+
+    #[test]
+    fn runtime_branches_via_expect_any() {
+        let script = parse(
+            r#"
+            timeout_secs = 2
+
+            [[step]]
+            name = "probe"
+            send = "status\n"
+            expect_any = [
+                { pattern = "ERROR", goto = "fail" },
+                { pattern = "ready", goto = "win" },
+            ]
+
+            [[step]]
+            name = "win"
+            ok = true
+
+            [[step]]
+            name = "fail"
+            ok = false
+            "#,
+        )
+        .unwrap();
+        let (mut t, _tx) = mock_with_rx(b"booting\nready\n");
+        let em = null_emitter();
+        let outcome = run_with_transport(script, &mut t, &em, true).unwrap();
+        assert_eq!(outcome, Outcome::Ok);
+    }
+
+    #[test]
+    fn runtime_captures_substitute_into_later_send() {
+        // The expect regex names a group `ip`; the next step
+        // references {{ip}}. The mock will see the substituted value.
+        let script = parse(
+            r#"
+            timeout_secs = 2
+
+            [[step]]
+            expect = "addr (?P<ip>\\d+\\.\\d+\\.\\d+\\.\\d+)"
+
+            [[step]]
+            send = "ping {{ip}}\n"
+            "#,
+        )
+        .unwrap();
+        let (mut t, tx) = mock_with_rx(b"addr 10.0.0.1\n");
+        let em = null_emitter();
+        let outcome = run_with_transport(script, &mut t, &em, true).unwrap();
+        assert_eq!(outcome, Outcome::Ok);
+        let written = String::from_utf8(tx.lock().unwrap().clone()).unwrap();
+        // Note: send-only step with no expect advances immediately —
+        // the second step doesn't need a reply.
+        assert_eq!(written, "ping 10.0.0.1\n");
+    }
+
+    #[test]
+    fn runtime_expect_not_negative_match() {
+        let script = parse(
+            r#"
+            timeout_secs = 2
+
+            [[step]]
+            expect = "FINAL"
+            expect_not = "FATAL"
+            "#,
+        )
+        .unwrap();
+        let (mut t, _tx) = mock_with_rx(b"warming up\nFATAL panic\nFINAL\n");
+        let em = null_emitter();
+        let outcome = run_with_transport(script, &mut t, &em, true).unwrap();
+        assert_eq!(outcome, Outcome::ExpectNotFail);
+    }
+
+    #[test]
+    fn runtime_crash_detector_fires() {
+        let script = parse(
+            r#"
+            timeout_secs = 3
+            [[step]]
+            expect = "WILL NEVER ARRIVE"
+            "#,
+        )
+        .unwrap();
+        // "Guru Meditation Error" matches the panic detector; followed
+        // by "Rebooting..." which is a crash-end sentinel that flushes
+        // the context immediately rather than waiting for the full
+        // 5-second context window.
+        let (mut t, _tx) = mock_with_rx(b"normal\nGuru Meditation Error\nstack\nRebooting...\n");
+        let em = null_emitter();
+        // Crash detection ENABLED (third arg = no_crash_detect = false).
+        let outcome = run_with_transport(script, &mut t, &em, false).unwrap();
+        assert_eq!(outcome, Outcome::Crash);
+    }
+
+    #[test]
+    fn runtime_send_only_step_advances_immediately() {
+        // Both steps are send-only with no expect — the script should
+        // complete in well under the 30s default timeout. We just
+        // assert it returns Ok within a reasonable wall-clock budget.
+        let script = parse(
+            r#"
+            timeout_secs = 30
+
+            [[step]]
+            send = "one\n"
+
+            [[step]]
+            send = "two\n"
+            "#,
+        )
+        .unwrap();
+        let (mut t, tx) = mock_with_rx(b"");
+        let em = null_emitter();
+        let started = std::time::Instant::now();
+        let outcome = run_with_transport(script, &mut t, &em, true).unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(outcome, Outcome::Ok);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "send-only steps should not wait; elapsed = {:?}",
+            elapsed
+        );
+        assert_eq!(
+            String::from_utf8(tx.lock().unwrap().clone()).unwrap(),
+            "one\ntwo\n"
+        );
     }
 }
