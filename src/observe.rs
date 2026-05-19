@@ -199,19 +199,29 @@ struct EmitterInner {
     json_stdout: bool,
     plain: bool,
     file: Option<std::fs::File>,
+    /// True when stderr is a TTY (human runs at an interactive prompt) AND
+    /// we're not in JSON mode. Drives ANSI colour emission so piped runs
+    /// stay clean.
+    color: bool,
 }
 
 impl Emitter {
     pub fn new(json_stdout: bool, log_file: Option<&Path>) -> std::io::Result<Self> {
+        use std::io::IsTerminal;
         let file = match log_file {
             Some(p) => Some(OpenOptions::new().create(true).append(true).open(p)?),
             None => None,
         };
+        // Honour NO_COLOR (https://no-color.org) and CLICOLOR=0.
+        let no_color = std::env::var_os("NO_COLOR").is_some()
+            || matches!(std::env::var("CLICOLOR").as_deref(), Ok("0"));
+        let color = !json_stdout && std::io::stderr().is_terminal() && !no_color;
         Ok(Self {
             inner: Arc::new(Mutex::new(EmitterInner {
                 json_stdout,
                 plain: !json_stdout,
                 file,
+                color,
             })),
         })
     }
@@ -240,7 +250,7 @@ impl Emitter {
                 let _ = writeln!(out, "{}", serial);
                 let _ = out.flush();
             } else {
-                let _ = writeln!(std::io::stderr().lock(), "{}", human(&logged));
+                let _ = writeln!(std::io::stderr().lock(), "{}", human(&logged, g.color));
             }
         }
         if let Some(f) = g.file.as_mut() {
@@ -267,62 +277,143 @@ impl Clone for Emitter {
     }
 }
 
-fn human(e: &LoggedEvent) -> String {
+// ANSI escape helpers. Inactive when `c` is false so the same formatter
+// works for both colorised TTY output and plain piped logs.
+const ANSI_RESET: &str = "\x1b[0m";
+fn dim(s: impl AsRef<str>, c: bool) -> String {
+    if c {
+        format!("\x1b[2m{}{}", s.as_ref(), ANSI_RESET)
+    } else {
+        s.as_ref().to_string()
+    }
+}
+fn bold(s: impl AsRef<str>, c: bool) -> String {
+    if c {
+        format!("\x1b[1m{}{}", s.as_ref(), ANSI_RESET)
+    } else {
+        s.as_ref().to_string()
+    }
+}
+fn cyan(s: impl AsRef<str>, c: bool) -> String {
+    if c {
+        format!("\x1b[36m{}{}", s.as_ref(), ANSI_RESET)
+    } else {
+        s.as_ref().to_string()
+    }
+}
+fn green(s: impl AsRef<str>, c: bool) -> String {
+    if c {
+        format!("\x1b[32m{}{}", s.as_ref(), ANSI_RESET)
+    } else {
+        s.as_ref().to_string()
+    }
+}
+fn yellow(s: impl AsRef<str>, c: bool) -> String {
+    if c {
+        format!("\x1b[33m{}{}", s.as_ref(), ANSI_RESET)
+    } else {
+        s.as_ref().to_string()
+    }
+}
+fn red(s: impl AsRef<str>, c: bool) -> String {
+    if c {
+        format!("\x1b[31m{}{}", s.as_ref(), ANSI_RESET)
+    } else {
+        s.as_ref().to_string()
+    }
+}
+fn magenta(s: impl AsRef<str>, c: bool) -> String {
+    if c {
+        format!("\x1b[35m{}{}", s.as_ref(), ANSI_RESET)
+    } else {
+        s.as_ref().to_string()
+    }
+}
+
+fn human(e: &LoggedEvent, c: bool) -> String {
+    // Every line has the same shape: dim timestamp, then the per-event
+    // colorised body. Keeps the visual rhythm consistent so the eye can
+    // scan a long run quickly.
+    let ts = dim(format!("[{}]", e.ts), c);
     match &e.event {
         Event::RunStart {
             tool, port, baud, ..
-        } => {
-            format!("[{}] {} starting on {} @ {}", e.ts, tool, port, baud)
-        }
+        } => format!(
+            "{} {} starting on {} @ {}",
+            ts,
+            bold(tool, c),
+            cyan(port, c),
+            baud
+        ),
         Event::TransportInfo {
             port,
             usb_vid,
             usb_pid,
         } => format!(
-            "[{}] transport {} vid={} pid={}",
-            e.ts,
-            port,
+            "{} transport {} vid={} pid={}",
+            ts,
+            cyan(port, c),
             usb_vid.clone().unwrap_or_else(|| "?".into()),
             usb_pid.clone().unwrap_or_else(|| "?".into())
         ),
-        Event::ConnectAttempt { strategy, attempt } => {
-            format!("[{}] connect {} (attempt {})", e.ts, strategy, attempt)
-        }
-        Event::Connected { strategy, attempts } => {
-            format!(
-                "[{}] connected via {} after {} attempt(s)",
-                e.ts, strategy, attempts
-            )
-        }
-        Event::ChipDetected { chip, chip_id } => {
-            format!("[{}] detected {} (chip_id={})", e.ts, chip, chip_id)
-        }
-        Event::StubUploadStart { chip, blob } => {
-            format!("[{}] uploading stub {} for {}", e.ts, blob, chip)
-        }
+        Event::ConnectAttempt { strategy, attempt } => format!(
+            "{} connect {} (attempt {})",
+            ts,
+            magenta(strategy, c),
+            attempt
+        ),
+        Event::Connected { strategy, attempts } => format!(
+            "{} connected via {} after {} attempt(s)",
+            ts,
+            green(strategy, c),
+            attempts
+        ),
+        Event::ChipDetected { chip, chip_id } => format!(
+            "{} detected {} (chip_id={})",
+            ts,
+            bold(green(chip, c), c),
+            chip_id
+        ),
+        Event::StubUploadStart { chip, blob } => format!(
+            "{} uploading stub {} for {}",
+            ts,
+            cyan(blob, c),
+            bold(chip, c)
+        ),
         Event::StubRunning { chip, blob, entry } => format!(
-            "[{}] stub {} running on {} (entry {})",
-            e.ts, blob, chip, entry
+            "{} stub {} running on {} (entry {})",
+            ts,
+            green(blob, c),
+            bold(chip, c),
+            magenta(entry, c)
         ),
         Event::FlashIdRead {
             manufacturer,
             device,
             size_mb,
         } => format!(
-            "[{}] flash id: mfr={} dev={} size={}MB",
-            e.ts,
-            manufacturer,
-            device,
-            size_mb.map(|v| v.to_string()).unwrap_or_else(|| "?".into())
+            "{} flash id: mfr={} dev={} size={}",
+            ts,
+            magenta(manufacturer, c),
+            magenta(device, c),
+            bold(
+                size_mb
+                    .map(|v| format!("{}MB", v))
+                    .unwrap_or_else(|| "?".into()),
+                c
+            )
         ),
-        Event::MacRead { mac } => format!("[{}] MAC {}", e.ts, mac),
+        Event::MacRead { mac } => format!("{} MAC {}", ts, bold(mac, c)),
         Event::WriteBegin {
             addr,
             size,
             compressed,
         } => format!(
-            "[{}] writing {} bytes at {} (compressed={})",
-            e.ts, size, addr, compressed
+            "{} writing {} bytes at {} (compressed={})",
+            ts,
+            bold(size.to_string(), c),
+            cyan(addr, c),
+            compressed
         ),
         Event::WriteProgress {
             addr,
@@ -330,27 +421,55 @@ fn human(e: &LoggedEvent) -> String {
             total,
             pct,
         } => format!(
-            "[{}]   {}: {} / {} ({:.1}%)",
-            e.ts, addr, written, total, pct
+            "{}   {}: {} / {} ({:.1}%)",
+            ts,
+            cyan(addr, c),
+            written,
+            total,
+            pct
         ),
-        Event::Md5Verified { addr, size, md5 } => {
-            format!("[{}] {} ({} bytes) md5={}", e.ts, addr, size, md5)
+        Event::Md5Verified { addr, size, md5 } => format!(
+            "{} {} ({} bytes) md5={}",
+            ts,
+            cyan(addr, c),
+            size,
+            green(md5, c)
+        ),
+        Event::EraseBegin { addr, size } => {
+            format!("{} erase {} +{} bytes", ts, cyan(addr, c), size)
         }
-        Event::EraseBegin { addr, size } => format!("[{}] erase {} +{} bytes", e.ts, addr, size),
-        Event::EraseDone { addr, size, ms } => {
-            format!("[{}] erased {} +{} bytes in {}ms", e.ts, addr, size, ms)
+        Event::EraseDone { addr, size, ms } => format!(
+            "{} erased {} +{} bytes in {}ms",
+            ts,
+            cyan(addr, c),
+            size,
+            ms
+        ),
+        Event::ReadBegin { addr, size } => {
+            format!("{} read {} +{} bytes", ts, cyan(addr, c), size)
         }
-        Event::ReadBegin { addr, size } => format!("[{}] read {} +{} bytes", e.ts, addr, size),
-        Event::ReadDone { addr, size, md5 } => {
-            format!("[{}] read {} +{} bytes md5={}", e.ts, addr, size, md5)
-        }
-        Event::ResetIssued { kind } => format!("[{}] reset issued ({})", e.ts, kind),
+        Event::ReadDone { addr, size, md5 } => format!(
+            "{} read {} +{} bytes md5={}",
+            ts,
+            cyan(addr, c),
+            size,
+            green(md5, c)
+        ),
+        Event::ResetIssued { kind } => format!("{} reset issued ({})", ts, magenta(kind, c)),
         Event::BaudUpgrade { from, to } => {
-            format!("[{}] baud upgrade {} -> {}", e.ts, from, to)
+            format!(
+                "{} baud upgrade {} -> {}",
+                ts,
+                from,
+                bold(to.to_string(), c)
+            )
         }
-        Event::PartitionTableLoaded { source, count } => {
-            format!("[{}] partition table {} ({} entries)", e.ts, source, count)
-        }
+        Event::PartitionTableLoaded { source, count } => format!(
+            "{} partition table {} ({} entries)",
+            ts,
+            cyan(source, c),
+            count
+        ),
         Event::PartitionResolved {
             name,
             ptype,
@@ -358,16 +477,21 @@ fn human(e: &LoggedEvent) -> String {
             offset,
             size,
         } => format!(
-            "[{}] partition {} type={}/{} @ {} ({} bytes)",
-            e.ts, name, ptype, subtype, offset, size
+            "{} partition {} type={}/{} @ {} ({} bytes)",
+            ts,
+            bold(name, c),
+            ptype,
+            magenta(subtype, c),
+            cyan(offset, c),
+            size
         ),
-        Event::BackupBegin { size } => format!("[{}] backup begin ({} bytes)", e.ts, size),
+        Event::BackupBegin { size } => format!("{} backup begin ({} bytes)", ts, size),
         Event::BackupDone { size, md5 } => {
-            format!("[{}] backup done {} bytes md5={}", e.ts, size, md5)
+            format!("{} backup done {} bytes md5={}", ts, size, green(md5, c))
         }
-        Event::RestoreBegin { size } => format!("[{}] restore begin ({} bytes)", e.ts, size),
+        Event::RestoreBegin { size } => format!("{} restore begin ({} bytes)", ts, size),
         Event::RestoreDone { size, md5 } => {
-            format!("[{}] restore done {} bytes md5={}", e.ts, size, md5)
+            format!("{} restore done {} bytes md5={}", ts, size, green(md5, c))
         }
         Event::MonitorStart {
             port,
@@ -376,62 +500,98 @@ fn human(e: &LoggedEvent) -> String {
             expect,
             expect_not,
         } => format!(
-            "[{}] monitor {} @ {} (timeout {}s, expect {:?}, expect_not {:?})",
-            e.ts, port, baud, timeout_secs, expect, expect_not
+            "{} monitor {} @ {} (timeout {}s, expect {:?}, expect_not {:?})",
+            ts,
+            cyan(port, c),
+            baud,
+            timeout_secs,
+            expect,
+            expect_not
         ),
         Event::SerialLine { line } => line.clone(),
         Event::ExpectMatch {
             kind,
             pattern,
             line,
-        } => {
-            format!("[{}] {} match {:?} on line: {}", e.ts, kind, pattern, line)
-        }
+        } => format!(
+            "{} {} match {:?} on line: {}",
+            ts,
+            if *kind == "negative" {
+                red(*kind, c)
+            } else {
+                green(*kind, c)
+            },
+            pattern,
+            line
+        ),
         Event::MonitorTimeout {
             lines_seen,
             bytes_seen,
         } => format!(
-            "[{}] monitor timeout ({} lines, {} bytes)",
-            e.ts, lines_seen, bytes_seen
+            "{} {} ({} lines, {} bytes)",
+            ts,
+            yellow("monitor timeout", c),
+            lines_seen,
+            bytes_seen
         ),
         Event::MonitorComplete {
             reason,
             duration_ms,
             lines_seen,
             bytes_seen,
-        } => format!(
-            "[{}] monitor complete ({}) {}ms / {} lines / {} bytes",
-            e.ts, reason, duration_ms, lines_seen, bytes_seen
-        ),
+        } => {
+            let coloured = match *reason {
+                "expect_match" => green(*reason, c),
+                "expect_not_match" | "crash" => red(*reason, c),
+                "timeout" => yellow(*reason, c),
+                _ => (*reason).to_string(),
+            };
+            format!(
+                "{} monitor complete ({}) {}ms / {} lines / {} bytes",
+                ts, coloured, duration_ms, lines_seen, bytes_seen
+            )
+        }
         Event::CrashDetected {
             kind,
             pattern,
             line,
-        } => {
-            format!(
-                "[{}] !! CRASH ({}) matched {:?}: {}",
-                e.ts, kind, pattern, line
-            )
-        }
+        } => format!(
+            "{} {} ({}) matched {:?}: {}",
+            ts,
+            red(bold("!! CRASH", c), c),
+            red(*kind, c),
+            pattern,
+            line
+        ),
         Event::CrashContext { kind, lines } => format!(
-            "[{}] crash context ({}, {} lines):\n{}",
-            e.ts,
-            kind,
+            "{} {} ({}, {} lines):\n{}",
+            ts,
+            red(bold("crash context", c), c),
+            red(*kind, c),
             lines.len(),
             lines.join("\n")
         ),
-        Event::Warning { message } => format!("[{}] WARN: {}", e.ts, message),
+        Event::Warning { message } => format!("{} {}: {}", ts, yellow("WARN", c), message),
         Event::Error {
             stage,
             class,
             detail,
-        } => {
-            format!("[{}] ERROR {}/{}: {}", e.ts, stage, class, detail)
-        }
+        } => format!(
+            "{} {} {}/{}: {}",
+            ts,
+            red(bold("ERROR", c), c),
+            stage,
+            magenta(class, c),
+            detail
+        ),
         Event::RunComplete { ok, duration_ms } => format!(
-            "[{}] run complete ({}) in {}ms",
-            e.ts,
-            if *ok { "ok" } else { "FAILED" },
+            "{} run complete ({}) in {}ms",
+            ts,
+            if *ok {
+                green(bold("ok", c), c)
+            } else {
+                red(bold("FAILED", c), c)
+            },
             duration_ms
         ),
     }

@@ -44,7 +44,7 @@ but the hint engine's `next_actions` won't be available.
 
 | Flag | Purpose |
 |------|---------|
-| `--port /dev/...` | Mandatory for everything except the offline `elf2image` and `merge-bin` subcommands. |
+| `--port /dev/...` | If omitted **and** exactly one ESP-likely USB serial device is present, esparagus auto-selects it and emits `auto-selected port ...` on stderr. If multiple are present, the run aborts with exit 2 and a list of candidates. Use `list-ports` to see what's visible. Mandatory if you want to skip the auto-select, and ignored entirely for the offline `elf2image` / `merge-bin` / `list-ports` subcommands. |
 | `--baud 460800` | Default; lower (115200) if you see CRC / MD5 mismatches. The bootloader sync always happens at 115200 internally and is upgraded after the stub starts. |
 | `--chip esp32-s3` | Optional. If omitted, esparagus auto-detects via `GET_SECURITY_INFO` or chip-magic register. Set it only when you specifically want to abort on the wrong chip. |
 | `--json` | Emit NDJSON on stdout. **Always set this.** |
@@ -113,7 +113,8 @@ pass `--table partitions.csv` (IDF-format CSV).
 
 | Subcommand | Needs port | What it does |
 |---|---|---|
-| `detect` | yes | Identify chip + MAC + flash ID. Use this first when you don't know what's connected. |
+| `detect` | yes | Identify chip + MAC + flash ID. Use this first when you don't know what's connected. **Note: the subcommand is `detect`, not `chip-id` or `chip_id`** — though those are accepted as aliases. |
+| `list-ports` | **no** | Walk the OS serial port list + USB descriptors via nusb and print ESP-likely devices (Espressif-native USB, CP210x, CH34x, FTDI bridges). De-duplicates the macOS cu./tty. variants. |
 | `read-mac` | yes | Read base MAC from EFUSE. |
 | `flash-id` | yes | SPI flash JEDEC ID + decoded size (MB). |
 | `erase-flash` | yes | Erase the entire chip. **Destructive.** |

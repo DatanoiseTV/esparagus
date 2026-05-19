@@ -5,6 +5,7 @@
 
 pub mod chip;
 pub mod cli;
+pub mod discover;
 pub mod error;
 pub mod esptool_compat;
 pub mod image;

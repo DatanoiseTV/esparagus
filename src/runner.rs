@@ -45,14 +45,26 @@ pub fn run(cli: Cli) -> i32 {
     if let Some(code) = run_offline_if_applicable(&cli) {
         return code;
     }
+    // `list-ports` is also offline — it walks the OS / USB lists.
+    if matches!(cli.command, Command::ListPorts) {
+        return handle_list_ports(cli.json);
+    }
     // Required port for everything but `--help` and `--version`, which clap
-    // handles itself.
+    // handles itself. If --port is missing AND exactly one ESP-like
+    // candidate is found on the system, auto-select it; otherwise list the
+    // candidates and exit 2 so the user can pick.
     let port = match &cli.port {
         Some(p) => p.clone(),
-        None => {
-            eprintln!("error: --port is required");
-            return 2;
-        }
+        None => match crate::discover::auto_select_port() {
+            Ok(d) => {
+                eprintln!("auto-selected port {} ({})", d.path, d.bridge_human,);
+                d.path
+            }
+            Err(msg) => {
+                eprintln!("error: --port not given and {}", msg);
+                return 2;
+            }
+        },
     };
 
     // Monitor needs the port but bypasses the entire sync/detect/stub flow
@@ -241,6 +253,50 @@ fn run_monitor(
     }
 }
 
+fn handle_list_ports(json: bool) -> i32 {
+    let cands = crate::discover::list_esp_candidates();
+    if json {
+        // One NDJSON event per discovered port — same shape an agent would
+        // see if it ran a chip-touching command, so the discovery output is
+        // greppable / parseable with the same machinery.
+        for c in &cands {
+            let line = serde_json::json!({
+                "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                "level": "info",
+                "event": "discovered_port",
+                "path": c.path,
+                "vid": c.vid,
+                "pid": c.pid,
+                "manufacturer": c.manufacturer,
+                "product": c.product,
+                "serial_number": c.serial_number,
+                "bridge": c.bridge,
+                "bridge_human": c.bridge_human,
+            });
+            println!("{}", line);
+        }
+    } else if cands.is_empty() {
+        eprintln!("no ESP-like USB serial devices found.");
+    } else {
+        println!("{} ESP-like device(s) found:", cands.len());
+        for c in &cands {
+            println!();
+            println!("  path           {}", c.path);
+            println!("  vid:pid        {}:{}  ({})", c.vid, c.pid, c.bridge_human);
+            if let Some(m) = &c.manufacturer {
+                println!("  manufacturer   {}", m);
+            }
+            if let Some(p) = &c.product {
+                println!("  product        {}", p);
+            }
+            if let Some(s) = &c.serial_number {
+                println!("  serial         {}", s);
+            }
+        }
+    }
+    0
+}
+
 /// Dispatch the file-only subcommands. Returns `Some(exit_code)` if it
 /// handled the command, `None` if the command needs a chip connection.
 fn run_offline_if_applicable(cli: &Cli) -> Option<i32> {
@@ -411,6 +467,7 @@ fn current_stage_name(cli: &Cli) -> String {
         Command::MergeBin { .. } => "merge_bin",
         Command::Monitor { .. } => "monitor",
         Command::FlashMonitor { .. } => "flash_monitor",
+        Command::ListPorts => "list_ports",
     }
     .into()
 }
@@ -905,7 +962,8 @@ fn run_inner(
         Command::Elf2Image { .. }
         | Command::MergeBin { .. }
         | Command::Monitor { .. }
-        | Command::FlashMonitor { .. } => {
+        | Command::FlashMonitor { .. }
+        | Command::ListPorts => {
             // These are dispatched before we ever open a port for the
             // protocol flow (offline ones via run_offline_if_applicable,
             // monitor + flash-monitor via their own branches in run());

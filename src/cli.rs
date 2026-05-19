@@ -72,7 +72,18 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
+    /// List USB serial devices that look like ESP boards (Espressif native
+    /// USB or known UART bridges: CP210x, CH34x, FTDI). De-duplicates the
+    /// macOS cu./tty. variants and enriches each entry with USB descriptor
+    /// strings (manufacturer / product / serial number) via nusb. Does
+    /// not open any port, so safe to run without --port.
+    #[command(name = "list-ports")]
+    ListPorts,
+
     /// Detect the chip and report its identity + flash JEDEC ID + MAC.
+    /// `chip-id` and `chip_id` are accepted as aliases so esptool-style
+    /// invocations work without going through the busybox compat layer.
+    #[command(alias = "chip-id", alias = "chip_id")]
     Detect,
 
     /// Read the base MAC address from EFUSE.
