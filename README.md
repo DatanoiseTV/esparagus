@@ -204,6 +204,51 @@ ln -s "$(which esparagus)" ~/.local/bin/esptool.py
 esptool.py --chip esp32-s3 --port /dev/cu.usbserial-XYZ write_flash 0x0 boot.bin 0x10000 app.bin
 ```
 
+## EFUSE inspection (`read-efuse`)
+
+Dump the EFUSE BLOCK0+BLOCK1 region as 32-bit words plus a decoded
+BASE_MAC and silicon revision for every chip in the registry:
+
+```sh
+esparagus read-efuse
+# [...] EFUSE base=0x600b4800 MAC=3C:DC:75:9A:EC:9C rev=1.00
+# [...] +0x0000 00000000 00000000 00000000 00000000
+# [...] +0x0010 ...
+```
+
+For the espefuse-style full summary (every `show: y` field from the
+bundled upstream YAML definitions — typically 30–50 per chip
+covering secure boot, flash encryption, JTAG/USB/download lockdown,
+wafer/package version, WR_DIS / RD_DIS protection masks):
+
+```sh
+esparagus read-efuse --summary
+# [...] EFUSE summary (47 fields)
+# [...]   WR_DIS = 0 (0x0)  // Disable programming of individual eFuses
+# [...]   RD_DIS = 0 (0x0)  // Disable reading from BlOCK4-10
+# [...]   DIS_USB_JTAG = false  // Represents whether the USB-to-JTAG function …
+# [...]   SPI_BOOT_CRYPT_CNT = 0 (0x0) [Disable]  // Enables flash encryption …
+# [...]   SECURE_BOOT_EN = false  // Represents whether secure boot is enabled …
+# [...]   WAFER_VERSION_MAJOR = 1 (0x1)  // …
+# [...]   …
+```
+
+In `--json` mode the entire decoded field set arrives as a single
+`efuse_summary` event whose `fields` array carries `name`, `block`,
+`bit_offset`, `bit_len`, `value`, `bytes_hex` (for wider fields),
+`kind` (bool / uint:N / bytes:N), `mapped` (the dict-enum string
+when present), and `desc`. Filter with `jq`:
+
+```sh
+esparagus --json read-efuse --summary | jq -r '
+  select(.event=="efuse_summary").fields[]
+  | select(.name|test("SECURE|CRYPT|DIS_"))
+  | "\(.name) = \(.value)  // \(.desc)"'
+```
+
+Read-only — EFUSE *burn* is intentionally not exposed (one-way
+fuses; use `espefuse.py` if you need to write).
+
 ## Expect mode: scriptable serial automation
 
 `expect` runs a TOML script of `send` / `expect` / `expect_any` /
@@ -438,7 +483,7 @@ or CI script can branch on them without reading the English `detail`.
 | `monitor` | yes | Serial monitor with expect / built-in crash detection (default baud 115200) |
 | `flash-monitor` | yes | `write-flash` + `monitor` in one command |
 | `expect` | yes (no with `--check`) | Run a TOML expect script (send/expect/branches/captures + crash detection) |
-| `read-efuse` | yes | Dump EFUSE BLOCK0+BLOCK1 + decoded MAC + silicon revision (all 13 chips) |
+| `read-efuse` [`--summary`] | yes | Dump EFUSE words + decoded MAC + silicon rev. With `--summary`, also walks the bundled upstream YAML to decode every `show: y` field (espefuse-style) |
 | `completions` / `man` | no | Emit shell completion / man-page source on stdout |
 | `nvs view` / `nvs export` | yes (or `--from-file`) | NVS partition inspection (TUI or JSON) |
 | `elf2image` | no | ELF → ESP firmware image |

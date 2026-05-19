@@ -126,6 +126,56 @@ Emitted after the stub starts and `change_baud` succeeds.
 {"event":"mac_read","mac":"7F:AF:D0:B2:F1:80"}
 ```
 
+### `efuse_read`
+
+Emitted by `read-efuse`. The `words` array is the raw EFUSE
+peripheral region as 32-bit little-endian words starting at `base`.
+`chip_rev` is `"?"` only when the chip isn't in the decoder table
+(should never happen for chips in `chip::REGISTRY`).
+
+```json
+{"event":"efuse_read","mac":"3C:DC:75:9A:EC:9C","chip_rev":"1.00",
+ "base":"0x600b4800",
+ "words":[0,0,0,0,0,0,694591177,3756915602,1893798020, ...]}
+```
+
+### `efuse_summary`
+
+Emitted by `read-efuse --summary`. Carries one entry per `show: y`
+field from the bundled upstream YAML for the detected chip
+(typically 30–50 fields). Field ordering matches the YAML source
+file (block 0, then block 1, then block 2 …).
+
+```json
+{"event":"efuse_summary","fields":[
+  {"name":"WR_DIS","block":0,"bit_offset":0,"bit_len":32,
+   "value":0,"bytes_hex":null,"kind":"uint:32","mapped":null,
+   "desc":"Disable programming of individual eFuses"},
+  {"name":"SPI_BOOT_CRYPT_CNT","block":0,"bit_offset":80,"bit_len":3,
+   "value":0,"bytes_hex":null,"kind":"uint:3","mapped":"Disable",
+   "desc":"Enables flash encryption when 1 or 3 bits are set …"},
+  {"name":"BLK_VERSION_MAJOR","block":2,"bit_offset":128,"bit_len":2,
+   "value":1,"bytes_hex":null,"kind":"uint:2","mapped":null,
+   "desc":"..."}
+]}
+```
+
+| Field | Notes |
+|---|---|
+| `name` | Mnemonic from upstream YAML (e.g. `SECURE_BOOT_EN`) |
+| `block` | EFUSE block index (0..3) |
+| `bit_offset` | Bit offset within the block |
+| `bit_len` | Field width in bits |
+| `value` | Raw integer (≤ 64 bits); interpretation per `kind` |
+| `bytes_hex` | Hex string when `bit_len > 64` (`bytes:N` types); otherwise null |
+| `kind` | Type tag: `bool`, `uint:N`, `bytes:N` |
+| `mapped` | Decoded enum string when the YAML has a `dict` (e.g. `1` → `"Enable"` for `SPI_BOOT_CRYPT_CNT`); otherwise null |
+| `desc` | One-line description from the upstream YAML |
+
+Fields in BLOCK3 + key blocks are skipped (block-base table doesn't
+include those yet); BLOCK0 / BLOCK1 / BLOCK2 cover every
+security-critical field.
+
 ### `read_begin` / `read_done`
 
 ```json
@@ -278,6 +328,86 @@ backtrace lines (or hit a "Rebooting..." sentinel / line budget).
 ```
 
 Up to 200 follow-up lines or 5 seconds, whichever comes first.
+
+## Expect script phase
+
+These events are emitted by `esparagus expect <script.toml>`. The
+crash detectors run during expect waits too, so `crash_detected` /
+`crash_context` can also appear here.
+
+### `expect_script_start`
+
+```json
+{"event":"expect_script_start","name":"boot-and-login","step_count":5}
+```
+
+### `expect_step_begin`
+
+One per step, just before the send (if any) and the wait. `send_preview`
+is the post-template-substitution string, truncated to 80 chars with
+control bytes escaped (`\n`, `\r`, `\t`, `\xNN`).
+
+```json
+{"event":"expect_step_begin","name":"send-pw",
+ "send_preview":"auth s3cret\\n",
+ "expect_summary":"# ",
+ "timeout_ms":5000}
+```
+
+`expect_summary` is `null` for send-only steps, the raw regex string
+for `expect`, or `"→goto1, →goto2, …"` for `expect_any` branches.
+
+### `expect_step_match`
+
+Emitted on a positive match (single `expect` or one branch of
+`expect_any`). `captures` carries every variable in scope after
+recording the match — both numbered (`$1`..`$N`) and named
+(`{{ip}}` etc).
+
+```json
+{"event":"expect_step_match","name":"have-ip",
+ "pattern":"GOT_IP (\\d+\\.\\d+\\.\\d+\\.\\d+)",
+ "line":"GOT_IP 10.0.0.42",
+ "captures":{"1":"10.0.0.42","ip":"10.0.0.42"}}
+```
+
+### `expect_step_branch`
+
+Only for `expect_any`. Emitted immediately after the matching
+branch's `expect_step_match`, before control transfers.
+
+```json
+{"event":"expect_step_branch","from":"auth","to":"post-login"}
+```
+
+### `expect_step_timeout`
+
+Emitted on per-step timeout, immediately before
+`expect_script_complete`.
+
+```json
+{"event":"expect_step_timeout","name":"wait-prompt",
+ "pattern":"esparagus> ","timeout_ms":5000}
+```
+
+### `expect_step_negative_match`
+
+Emitted when an `expect_not` pattern fires.
+
+```json
+{"event":"expect_step_negative_match","name":"check",
+ "pattern":"PANIC|ABORT","line":"PANIC: assert failed at foo.c:42"}
+```
+
+### `expect_script_complete`
+
+Always the last expect event. `final_step` is the step where the
+script terminated (matched, timed out, crashed, or
+hit `ok = true`/`ok = false`).
+
+```json
+{"event":"expect_script_complete","ok":true,"steps_run":5,"final_step":"done"}
+```
 
 ## Warnings and errors
 

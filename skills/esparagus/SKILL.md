@@ -131,7 +131,7 @@ pass `--table partitions.csv` (IDF-format CSV).
 | `monitor` | yes | Serial monitor with `--expect`/`--expect-not`/`--timeout` and built-in crash detection. **Defaults to 115200 baud** (the ESP-IDF app-console default); override with `--monitor-baud`. |
 | `flash-monitor` | yes | `write-flash` + `monitor` in one command. The feedback-loop default. Monitor phase also defaults to 115200. |
 | `expect <script.toml>` | yes | Run a scripted send/expect/branches/captures flow (better-than-GNU-`expect`). One NDJSON event per step; same crash detectors as `monitor`; templates pull from `{{env.X}}` / captures / `{{1}}`–`{{9}}`. See `references/EXPECT_SCRIPTS.md`. `--check` validates without a port. |
-| `read-efuse` | yes | Dump EFUSE BLOCK0+BLOCK1 as words + decoded MAC + (P4 only today) silicon revision. Read-only — burn is intentionally out of scope. |
+| `read-efuse` [`--summary`] | yes | Dump EFUSE BLOCK0+BLOCK1 as words + decoded MAC + silicon revision (every chip in the registry). With `--summary`, also walks every `show: y` field from the bundled upstream YAML definitions (espefuse-style — typically 30–50 fields per chip covering secure boot, flash encryption, JTAG/USB/download lockdown, WR_DIS / RD_DIS masks). One `efuse_summary` NDJSON event carries the full `fields` array (name, block, bit_offset, bit_len, value, bytes_hex, kind, mapped, desc). Read-only — burn is intentionally out of scope. |
 | `completions <shell>` / `man` | **no** | Emit shell-completion or roff man-page source on stdout. |
 | `elf2image` | **no** | Offline: ELF → ESP firmware image. |
 | `merge-bin` | **no** | Offline: combine `<addr> <file>` pairs into a single padded image. |

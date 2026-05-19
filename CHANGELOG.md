@@ -59,6 +59,15 @@ All notable changes to this project follow
   H4, P4, S31; ESP32-H21 returns 0.0 placeholder, matching upstream
   esptool pending public bit-position spec). EFUSE burn intentionally
   remains out of scope for v0.x — use `espefuse.py` for that.
+- `read-efuse --summary` decodes every `show: y` field from the
+  bundled upstream YAML definitions (`efuse_defs/*.yaml`) for the
+  detected chip — typically 30–50 fields covering secure boot,
+  flash encryption, JTAG/USB/download lockdown, wafer/package
+  version, and the WR_DIS / RD_DIS protection masks. Each field
+  carries its mnemonic, raw value, dict-decoded enum string when
+  applicable, and the one-line upstream description. Emitted as a
+  single structured `efuse_summary` NDJSON event for downstream
+  filtering. New MCP tool argument `summary: bool` on `read_efuse`.
 - MCP server now honours `notifications/cancelled` mid-call (SIGINT
   to the spawned child) and emits typed `notifications/progress`
   when the client supplied a `_meta.progressToken`.
