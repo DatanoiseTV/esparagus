@@ -1,4 +1,4 @@
-<img width="600" height="600" alt="esparagus" src="https://github.com/user-attachments/assets/a12e35af-3f7f-4f61-91c1-a86a253dd0b6" />
+<img width="600" height="600" alt="esparagus-logo" src="https://github.com/user-attachments/assets/b0f6a5fd-74f1-4054-b633-a3a7234023cf" />
 
 
 [![License: GPL-2.0+](https://img.shields.io/badge/License-GPL%202.0%2B-blue.svg)](LICENSE)
