@@ -97,12 +97,15 @@ impl SerialTransport {
             .data_bits(serialport::DataBits::Eight)
             .stop_bits(serialport::StopBits::One)
             .parity(serialport::Parity::None)
-            .flow_control(serialport::FlowControl::None)
-            // Second gate: kernel-level TIOCEXCL on Unix. Stops a `screen`
-            // / `minicom` / `cu` / debugger that isn't going through our
-            // lockfile from racing us on the wire. On Windows this is a
-            // no-op; the Win32 driver naturally serialises opens.
-            .exclusive(true);
+            .flow_control(serialport::FlowControl::None);
+        // Second gate: kernel-level TIOCEXCL on Unix. Stops a `screen`
+        // / `minicom` / `cu` / debugger that isn't going through our
+        // lockfile from racing us on the wire. The method only exists
+        // on Unix in serialport-rs — Windows's CreateFile on COM ports
+        // already refuses concurrent opens at the driver layer, so we
+        // skip the call there.
+        #[cfg(unix)]
+        let builder = builder.exclusive(true);
 
         let (vid, pid) = match probe_vid_pid(path) {
             Some((v, p)) => (Some(v), Some(p)),
