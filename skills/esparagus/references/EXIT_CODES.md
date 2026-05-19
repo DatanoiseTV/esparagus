@@ -21,6 +21,10 @@ numeric code alone, then read the report's `errors[0].class` and
 | 30 | Monitor `--expect-not` pattern matched | Firmware emitted a forbidden line. |
 | 31 | Monitor timed out | The hard `--timeout` ceiling was reached and no `--expect` had matched. |
 | 32 | Monitor detected an ESP crash | Built-in pattern (panic / WDT / abort / assert / stack-smash / exception / cache / brownout) matched. |
+| 40 | `expect` script step timed out | Step's per-step timeout (or default `timeout_secs`) elapsed without a match. Also fires on a terminal `ok = false` step. |
+| 41 | `expect` script `expect_not` pattern matched | A negative pattern matched during a wait. |
+| 42 | `expect` script crash detected | Same detector set as code 32. Look for the preceding `crash_detected` + `crash_context` events. |
+| 43 | `expect` script validation failed | Parse error, unknown `goto`, duplicate step name, bad regex (in a non-templated pattern), or unbalanced `{{ ... }}` braces. Run with `--check` locally to iterate fast — it doesn't need a chip. |
 
 ## Error `class` → `next_actions` map
 

@@ -73,6 +73,18 @@ pub fn run(cli: Cli) -> i32 {
             }
         }
     }
+    // `expect --check` validates the script without opening a port,
+    // so it must short-circuit before port resolution (the user may
+    // not have any board plugged in when linting their scripts in
+    // pre-commit / CI).
+    if let Command::Expect {
+        script,
+        check: true,
+        ..
+    } = &cli.command
+    {
+        return run_expect_check(script, cli.json, cli.log_file.as_deref());
+    }
     // Required port for everything but `--help` and `--version`, which clap
     // handles itself. If --port is missing AND exactly one ESP-like
     // candidate is found on the system, auto-select it; otherwise list the
@@ -123,8 +135,10 @@ pub fn run(cli: Cli) -> i32 {
         script,
         no_reset,
         no_crash_detect,
+        check: _,
     } = &cli.command
     {
+        // `--check` already handled above (before port resolution).
         return run_expect(
             script,
             &port,
@@ -336,6 +350,33 @@ fn run_expect(
                 "port" => 10,
                 _ => 1,
             }
+        }
+    }
+}
+
+fn run_expect_check(script_path: &Path, json: bool, log_file: Option<&Path>) -> i32 {
+    let emitter = match Emitter::new(json, log_file) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: could not open --log-file: {}", e);
+            return 2;
+        }
+    };
+    match crate::expect::load(script_path) {
+        Ok(s) => {
+            emitter.info(Event::ExpectScriptStart {
+                name: s.name.clone(),
+                step_count: s.steps.len(),
+            });
+            0
+        }
+        Err(e) => {
+            emitter.error(Event::Error {
+                stage: "expect".into(),
+                class: "script".into(),
+                detail: e.to_string(),
+            });
+            crate::expect::Outcome::ParseError.exit_code()
         }
     }
 }

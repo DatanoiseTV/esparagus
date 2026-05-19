@@ -388,9 +388,15 @@ pub enum Command {
         no_reset: bool,
         /// Disable the built-in crash detector (panic / wdt / abort /
         /// ...). Off by default — crashes during expect waits abort
-        /// the run with exit 20.
+        /// the run with exit 42.
         #[arg(long)]
         no_crash_detect: bool,
+        /// Validate the script (parse, regex compile, `goto`
+        /// resolution, unique step names) and exit without opening a
+        /// serial port. Exit 0 if the script is well-formed, 43
+        /// otherwise. Useful in pre-commit / CI lint passes.
+        #[arg(long)]
+        check: bool,
     },
 }
 

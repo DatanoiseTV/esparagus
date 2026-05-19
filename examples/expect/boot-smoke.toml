@@ -6,9 +6,9 @@
 #
 # Exit codes:
 #   0  → "MAIN LOOP READY" matched within 30s
-#   12 → timed out waiting for the marker
-#   13 → "ASSERT" appeared (negative pattern)
-#   20 → built-in crash detector fired
+#   40 → timed out waiting for the marker
+#   41 → "ASSERT" appeared (negative pattern)
+#   42 → built-in crash detector fired
 
 name = "boot-smoke"
 timeout_secs = 30

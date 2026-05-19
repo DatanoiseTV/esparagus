@@ -13,10 +13,19 @@ All notable changes to this project follow
   `expect_any` / `expect_not` steps with regex captures, mustache
   `{{var}}` templates (`{{env.NAME}}` / `{{capture_name}}` /
   `{{1}}`..`{{9}}` group refs), named branches with `goto`, and the
-  same built-in crash detectors as `monitor`. Stable exit codes
-  (0/12/13/20/31), one NDJSON event per step. Example scripts at
-  `examples/expect/`.
+  same built-in crash detectors as `monitor`. Templates work in
+  both `send` strings AND in `expect` / `expect_any` / `expect_not`
+  patterns (compiled at runtime after substitution). `--check`
+  validates a script without opening the serial port for pre-commit
+  / CI lint. Distinct exit codes 40/41/42/43 (kept out of the
+  general chip-flow range so callers can branch on the number
+  alone). One NDJSON event per step. Example scripts at
+  `examples/expect/`; full grammar in
+  `skills/esparagus/references/EXPECT_SCRIPTS.md`.
 - MCP `expect` tool wired to the new subcommand.
+- A line-buffer carry-over between expect steps so a multi-line
+  read (typical when the chip sends a burst) doesn't drop the
+  trailing lines after the first step matches.
 
 ### Changed
 

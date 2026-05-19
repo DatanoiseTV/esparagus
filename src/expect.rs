@@ -56,13 +56,15 @@
 //!   * `{{1}}`..`{{9}}`→ positional groups from the immediately prior
 //!     successful match.
 //!
-//! Exit codes (added to the existing table):
+//! Exit codes (kept distinct from chip-flow and monitor codes so
+//! callers can branch on the number alone without checking which
+//! subcommand produced it):
 //!   * 0  — script ended on an `ok = true` step or fell off the end
 //!     with no expects pending.
-//!   * 12 — expect timed out, or an `ok = false` terminal step.
-//!   * 13 — `expect_not` matched (negative pattern hit).
-//!   * 20 — crash detector fired during an expect wait.
-//!   * 31 — script parse / validation error.
+//!   * 40 — expect timed out, or an `ok = false` terminal step.
+//!   * 41 — `expect_not` matched (negative pattern hit).
+//!   * 42 — crash detector fired during an expect wait.
+//!   * 43 — script parse / validation error.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -159,10 +161,10 @@ impl Outcome {
     pub fn exit_code(self) -> i32 {
         match self {
             Outcome::Ok => 0,
-            Outcome::ExpectFail => 12,
-            Outcome::ExpectNotFail => 13,
-            Outcome::Crash => 20,
-            Outcome::ParseError => 31,
+            Outcome::ExpectFail => 40,
+            Outcome::ExpectNotFail => 41,
+            Outcome::Crash => 42,
+            Outcome::ParseError => 43,
         }
     }
 }
@@ -185,6 +187,11 @@ pub fn parse(text: &str) -> Result<Script> {
 /// Validate cross-references and regex compilability at load time, so
 /// we surface mistakes (typoed `goto`, malformed regex) before opening
 /// the serial port.
+///
+/// Patterns containing `{{...}}` are NOT regex-compiled here — they
+/// reference runtime captures/env that aren't known yet. They get a
+/// "looks like a template" check (matched braces) and are compiled at
+/// run time after substitution, with a clear error class.
 fn validate(s: &Script) -> Result<()> {
     if s.steps.is_empty() {
         return Err(Error::Other("script has no [[step]] entries".into()));
@@ -202,25 +209,13 @@ fn validate(s: &Script) -> Result<()> {
     for (i, st) in s.steps.iter().enumerate() {
         let label = step_label(st, i);
         if let Some(e) = &st.expect {
-            Regex::new(e).map_err(|err| {
-                Error::Other(format!("step {label}: bad expect regex {:?}: {}", e, err))
-            })?;
+            check_pattern(&label, "expect", e)?;
         }
         if let Some(e) = &st.expect_not {
-            Regex::new(e).map_err(|err| {
-                Error::Other(format!(
-                    "step {label}: bad expect_not regex {:?}: {}",
-                    e, err
-                ))
-            })?;
+            check_pattern(&label, "expect_not", e)?;
         }
         for b in &st.expect_any {
-            Regex::new(&b.pattern).map_err(|err| {
-                Error::Other(format!(
-                    "step {label}: bad expect_any pattern {:?}: {}",
-                    b.pattern, err
-                ))
-            })?;
+            check_pattern(&label, "expect_any", &b.pattern)?;
             if !by_name.contains_key(b.goto.as_str()) {
                 return Err(Error::Other(format!(
                     "step {label}: goto target {:?} does not exist",
@@ -229,6 +224,8 @@ fn validate(s: &Script) -> Result<()> {
             }
         }
         for (k, v) in &st.capture {
+            // Capture-table patterns can't reference earlier captures
+            // (chicken-and-egg), so compile them eagerly.
             Regex::new(v).map_err(|err| {
                 Error::Other(format!(
                     "step {label}: bad capture regex for {:?}: {}",
@@ -246,6 +243,37 @@ fn validate(s: &Script) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Validate-time pattern check. If the pattern contains a `{{...}}`
+/// template, we can't regex-compile it (the substitution target is a
+/// runtime value) so we only sanity-check that braces are balanced.
+/// Otherwise we compile as usual.
+fn check_pattern(step: &str, field: &str, pat: &str) -> Result<()> {
+    if pat.contains("{{") {
+        if pat.matches("{{").count() != pat.matches("}}").count() {
+            return Err(Error::Other(format!(
+                "step {step}: {field} pattern {:?} has unbalanced {{{{...}}}} braces",
+                pat
+            )));
+        }
+        return Ok(());
+    }
+    Regex::new(pat)
+        .map_err(|err| Error::Other(format!("step {step}: bad {field} regex {:?}: {}", pat, err)))
+        .map(|_| ())
+}
+
+/// Runtime pattern compile: substitute templates, then compile. Used
+/// for any pattern field that may contain `{{var}}` references.
+fn compile_pattern(pat: &str, vars: &HashMap<String, String>) -> Result<Regex> {
+    let expanded = substitute(pat, vars);
+    Regex::new(&expanded).map_err(|e| {
+        Error::Other(format!(
+            "runtime regex compile failed for {:?} (expanded to {:?}): {}",
+            pat, expanded, e
+        ))
+    })
 }
 
 fn step_label(st: &Step, idx: usize) -> String {
@@ -352,6 +380,12 @@ pub fn run_with_transport(
 
     let mut vars: HashMap<String, String> = HashMap::new();
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
+    // Bytes read from the transport but not yet handed to the current
+    // step's matcher — typically the trailing bytes of a multi-line
+    // read where the previous step's expect matched on the first
+    // newline and we'd otherwise lose the rest. Drained ahead of each
+    // new transport read.
+    let mut pending: Vec<u8> = Vec::new();
     let mut idx: usize = 0;
 
     while idx < script.steps.len() {
@@ -369,28 +403,29 @@ pub fn run_with_transport(
             None
         };
 
-        // 2. determine expected patterns
+        // 2. Determine expected patterns. Pattern strings may carry
+        // `{{var}}` templates that reference captures recorded in
+        // earlier steps; substitute against `vars` before compiling.
         enum Mode {
             None,
             Single(Regex, String),
             Any(Vec<(Regex, String)>),
         }
         let mode = if !step.expect_any.is_empty() {
-            let v: Vec<(Regex, String)> = step
-                .expect_any
-                .iter()
-                .map(|b| (Regex::new(&b.pattern).expect("validated"), b.goto.clone()))
-                .collect();
+            let mut v: Vec<(Regex, String)> = Vec::with_capacity(step.expect_any.len());
+            for b in &step.expect_any {
+                v.push((compile_pattern(&b.pattern, &vars)?, b.goto.clone()));
+            }
             Mode::Any(v)
         } else if let Some(p) = &step.expect {
-            Mode::Single(Regex::new(p).expect("validated"), p.clone())
+            Mode::Single(compile_pattern(p, &vars)?, p.clone())
         } else {
             Mode::None
         };
-        let expect_not_re = step
-            .expect_not
-            .as_ref()
-            .map(|p| Regex::new(p).expect("validated"));
+        let expect_not_re = match &step.expect_not {
+            Some(p) => Some(compile_pattern(p, &vars)?),
+            None => None,
+        };
 
         emitter.info(Event::ExpectStepBegin {
             name: label.clone(),
@@ -476,13 +511,31 @@ pub fn run_with_transport(
                 });
                 break 'wait Some(Outcome::ExpectFail);
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            transport.set_timeout(remaining.min(Duration::from_millis(250)))?;
-            let n: usize = transport.read(&mut buf).unwrap_or_default();
-            if n == 0 {
-                continue;
+            // Refill `pending` from the transport if we drained it.
+            // Anything still in `pending` survived from the previous
+            // step (or previous read iteration) and gets first crack.
+            if pending.is_empty() {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                transport.set_timeout(remaining.min(Duration::from_millis(250)))?;
+                let n: usize = transport.read(&mut buf).unwrap_or_default();
+                if n == 0 {
+                    continue;
+                }
+                pending.extend_from_slice(&buf[..n]);
             }
-            for &b in &buf[..n] {
+            // Process pending byte by byte. Index `j` tracks how many
+            // we consumed; on a match-break we keep `pending[j..]` for
+            // the next step. Without this preservation, a step that
+            // matches on the first newline of a multi-line read would
+            // silently drop the rest, breaking any "match X then match
+            // Y on the next line" script.
+            let mut j = 0;
+            // Set by the inner match arms; processed after the while
+            // exits so we can drain pending first.
+            let mut step_outcome: Option<Outcome> = None;
+            while j < pending.len() {
+                let b = pending[j];
+                j += 1;
                 if b == b'\r' {
                     continue;
                 }
@@ -561,10 +614,12 @@ pub fn run_with_transport(
                                     line: line.clone(),
                                     captures: snapshot_vars(&vars),
                                 });
-                                break 'wait Some(Outcome::Ok);
+                                step_outcome = Some(Outcome::Ok);
+                                break;
                             }
                         }
                         Mode::Any(branches) => {
+                            let mut branched = false;
                             for (re, target) in branches {
                                 if let Some(caps) = re.captures(&line) {
                                     record_captures(re, &caps, &mut vars);
@@ -575,35 +630,32 @@ pub fn run_with_transport(
                                         line: line.clone(),
                                         captures: snapshot_vars(&vars),
                                     });
-                                    // Resolve goto target.
                                     let next = *by_name.get(target).expect("validated");
                                     emitter.info(Event::ExpectStepBranch {
                                         from: label.clone(),
                                         to: target.clone(),
                                     });
-                                    // Jump
                                     idx = next;
+                                    branched = true;
                                     break;
                                 }
                             }
-                            // If we matched a branch, the inner `for`
-                            // updated `idx` and we want to break out of
-                            // the read loop to continue dispatch.
-                            // Detect that the line matched by checking
-                            // vars or by re-running the regex would be
-                            // duplicative; use a sentinel pattern.
-                            // Simpler: check if idx changed.
-                            if branches.iter().any(|(re, _)| re.is_match(&line)) {
-                                // Stop the read loop without changing
-                                // outcome — the dispatch loop will
-                                // pick up at the new idx.
-                                break 'wait Some(Outcome::Ok);
+                            if branched {
+                                // idx was reassigned to the goto target;
+                                // the dispatch loop picks up from there.
+                                step_outcome = Some(Outcome::Ok);
+                                break;
                             }
                         }
                     }
                 } else {
                     line_buf.push(b);
                 }
+            }
+            // Drop consumed bytes; keep the rest for the next step.
+            pending.drain(..j);
+            if let Some(o) = step_outcome {
+                break 'wait Some(o);
             }
         };
 
@@ -834,10 +886,10 @@ mod tests {
     #[test]
     fn outcome_exit_codes_are_documented() {
         assert_eq!(Outcome::Ok.exit_code(), 0);
-        assert_eq!(Outcome::ExpectFail.exit_code(), 12);
-        assert_eq!(Outcome::ExpectNotFail.exit_code(), 13);
-        assert_eq!(Outcome::Crash.exit_code(), 20);
-        assert_eq!(Outcome::ParseError.exit_code(), 31);
+        assert_eq!(Outcome::ExpectFail.exit_code(), 40);
+        assert_eq!(Outcome::ExpectNotFail.exit_code(), 41);
+        assert_eq!(Outcome::Crash.exit_code(), 42);
+        assert_eq!(Outcome::ParseError.exit_code(), 43);
     }
 
     // ----------------------------------------------------------------
@@ -1065,6 +1117,56 @@ mod tests {
         // Crash detection ENABLED (third arg = no_crash_detect = false).
         let outcome = run_with_transport(script, &mut t, &em, false).unwrap();
         assert_eq!(outcome, Outcome::Crash);
+    }
+
+    #[test]
+    fn runtime_expect_pattern_substitutes_captures() {
+        // Capture an IP in step 1, then reference it in step 2's
+        // EXPECT pattern (not just send). The test asserts the
+        // substitution happens at runtime — validate accepts the
+        // templated pattern, runtime compiles it after subs.
+        let script = parse(
+            r#"
+            timeout_secs = 2
+
+            [[step]]
+            expect = "addr (?P<ip>\\d+\\.\\d+\\.\\d+\\.\\d+)"
+
+            [[step]]
+            expect = "ip={{ip}}\\b"
+            "#,
+        )
+        .unwrap();
+        let (mut t, _tx) = mock_with_rx(b"addr 10.0.0.1\necho ip=10.0.0.1\n");
+        let em = null_emitter();
+        let outcome = run_with_transport(script, &mut t, &em, true).unwrap();
+        assert_eq!(outcome, Outcome::Ok);
+    }
+
+    #[test]
+    fn validation_accepts_templated_patterns() {
+        // Must validate without a runtime — the template can't be
+        // expanded yet so we only check brace balance.
+        let s = parse(
+            r#"
+            [[step]]
+            expect = "ip={{ip}}"
+            "#,
+        );
+        assert!(s.is_ok(), "templated expect should validate: {s:?}");
+    }
+
+    #[test]
+    fn validation_rejects_unbalanced_template_braces() {
+        let err = parse(
+            r#"
+            [[step]]
+            expect = "ip={{ip"
+            "#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unbalanced"), "got: {err}");
     }
 
     #[test]

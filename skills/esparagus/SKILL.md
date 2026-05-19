@@ -128,8 +128,11 @@ pass `--table partitions.csv` (IDF-format CSV).
 | `erase-partition --name X` | yes | Resolve partition name, then erase region. |
 | `backup -o file[.gz]` | yes | Dump entire flash. Auto-size from JEDEC. `.gz` extension = gzip. |
 | `restore file[.gz]` | yes | Write a backup back to flash. Auto-decompresses `.gz`. |
-| `monitor` | yes | Serial monitor with `--expect`/`--expect-not`/`--timeout` and built-in crash detection. |
-| `flash-monitor` | yes | `write-flash` + `monitor` in one command. The feedback-loop default. |
+| `monitor` | yes | Serial monitor with `--expect`/`--expect-not`/`--timeout` and built-in crash detection. **Defaults to 115200 baud** (the ESP-IDF app-console default); override with `--monitor-baud`. |
+| `flash-monitor` | yes | `write-flash` + `monitor` in one command. The feedback-loop default. Monitor phase also defaults to 115200. |
+| `expect <script.toml>` | yes | Run a scripted send/expect/branches/captures flow (better-than-GNU-`expect`). One NDJSON event per step; same crash detectors as `monitor`; templates pull from `{{env.X}}` / captures / `{{1}}`–`{{9}}`. See `references/EXPECT_SCRIPTS.md`. `--check` validates without a port. |
+| `read-efuse` | yes | Dump EFUSE BLOCK0+BLOCK1 as words + decoded MAC + (P4 only today) silicon revision. Read-only — burn is intentionally out of scope. |
+| `completions <shell>` / `man` | **no** | Emit shell-completion or roff man-page source on stdout. |
 | `elf2image` | **no** | Offline: ELF → ESP firmware image. |
 | `merge-bin` | **no** | Offline: combine `<addr> <file>` pairs into a single padded image. |
 | `nvs view` | yes (or `--from-file`) | Interactive TUI for the NVS partition. Not suitable for piped/CI use. |
@@ -152,6 +155,10 @@ pass `--table partitions.csv` (IDF-format CSV).
 | 30 | Monitor `--expect-not` pattern matched | Firmware emitted a forbidden line. Inspect log. |
 | 31 | Monitor timed out without an `--expect` match | Firmware didn't reach the expected state in time. |
 | 32 | Monitor detected an ESP panic / WDT / abort | Read the `crash_context` event for the full backtrace. |
+| 40 | `expect` script step timed out (or hit `ok = false`) | Read the failing step name from `expect_step_timeout` / `expect_script_complete`. |
+| 41 | `expect` script `expect_not` pattern matched | Forbidden line appeared. Inspect the `expect_step_negative_match` event. |
+| 42 | `expect` script crash detector fired | Same `crash_context` shape as `monitor` exit 32. |
+| 43 | `expect` script failed validation | Bad regex, unknown `goto`, duplicate step name, etc. Run with `--check` on the local machine to iterate fast. |
 
 Full mapping at `references/EXIT_CODES.md`.
 

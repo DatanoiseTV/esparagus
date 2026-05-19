@@ -204,6 +204,86 @@ ln -s "$(which esparagus)" ~/.local/bin/esptool.py
 esptool.py --chip esp32-s3 --port /dev/cu.usbserial-XYZ write_flash 0x0 boot.bin 0x10000 app.bin
 ```
 
+## Expect mode: scriptable serial automation
+
+`expect` runs a TOML script of `send` / `expect` / `expect_any` /
+`expect_not` steps with regex captures, named branches, per-step
+timeouts, and built-in crash detection. It's a "better than GNU
+expect" replacement aimed at CI and LLM-driven feedback loops: every
+step emits structured NDJSON events, exit codes are stable per
+failure class, and the same panic / WDT / abort / reboot-loop
+detectors that `monitor` uses are active during every wait.
+
+A minimal smoke test:
+
+```toml
+# boot-smoke.toml
+timeout_secs = 30
+
+[[step]]
+expect = "MAIN LOOP READY"
+expect_not = "ASSERT|FATAL"
+```
+
+```sh
+esparagus expect boot-smoke.toml
+# exit 0  → matched within 30s
+# exit 40 → timed out
+# exit 41 → expect_not pattern matched
+# exit 42 → crash detector fired
+```
+
+Captures + templates + branching let scripts express real flows:
+
+```toml
+# wifi-and-mqtt.toml
+timeout_secs = 20
+
+[[step]]
+expect = "esparagus> "
+timeout_secs = 5
+
+[[step]]
+send = "wifi join {{env.WIFI_SSID}} {{env.WIFI_PSK}}\n"
+expect_any = [
+    { pattern = "GOT_IP (\\d+\\.\\d+\\.\\d+\\.\\d+)", goto = "have-ip" },
+    { pattern = "WIFI_RETRY",                          goto = "ssid"    },
+    { pattern = "AUTH_FAIL",                            goto = "fail"   },
+]
+
+[[step]]
+name = "have-ip"
+capture = { ip = "GOT_IP (\\d+\\.\\d+\\.\\d+\\.\\d+)" }
+send = "ping {{ip}}\n"
+expect = "64 bytes from {{ip}}"
+
+[[step]]
+name = "fail"
+ok = false
+```
+
+Substitution sources, evaluated in order:
+
+- `{{env.NAME}}` → `$NAME` from the process environment (empty if unset).
+- `{{name}}`     → named captures from earlier `capture = { ... }` tables
+  or `(?P<name>...)` groups in earlier `expect` patterns.
+- `{{1}}`…`{{9}}` → positional groups from the most recent successful match.
+
+Templates work inside `send` AND inside `expect` / `expect_any` /
+`expect_not` patterns (compiled at runtime after substitution), so a
+captured value can be matched verbatim in a later step.
+
+Lint without a chip:
+
+```sh
+esparagus expect script.toml --check
+# Validates parse, regex compilation, balanced {{...}} braces, goto
+# targets, and unique step names. Exit 0 on success, 43 on error.
+```
+
+Two ready-to-fork examples ship in `examples/expect/`. The full
+grammar reference lives in `src/expect.rs`'s module docstring.
+
 ## Agent Skill (Claude Code, Cursor, Goose, ...)
 
 The `skills/esparagus/` directory follows the [agentskills.io](https://agentskills.io)
@@ -336,6 +416,10 @@ or CI script can branch on them without reading the English `detail`.
 | 30   | Monitor `--expect-not` pattern matched |
 | 31   | Monitor `--timeout` reached without an `--expect` match |
 | 32   | Monitor detected an ESP crash (panic / WDT / abort / reboot_loop / download_loop / ...) |
+| 40   | `expect` script step timed out, or hit a terminal `ok = false` step |
+| 41   | `expect` script `expect_not` pattern matched |
+| 42   | `expect` script crash detector fired during a wait |
+| 43   | `expect` script failed validation (bad regex, unknown `goto`, duplicate step name, ...) |
 
 ## Subcommand reference
 
@@ -351,8 +435,11 @@ or CI script can branch on them without reading the English `detail`.
 | `partitions` | yes | Read partition table (CSV or from chip) |
 | `write-partition` / `read-partition` / `erase-partition` | yes | Name-addressed partition ops |
 | `backup` / `restore` | yes | Full-flash dump / replay (gzip-aware) |
-| `monitor` | yes | Serial monitor with expect / built-in crash detection |
+| `monitor` | yes | Serial monitor with expect / built-in crash detection (default baud 115200) |
 | `flash-monitor` | yes | `write-flash` + `monitor` in one command |
+| `expect` | yes (no with `--check`) | Run a TOML expect script (send/expect/branches/captures + crash detection) |
+| `read-efuse` | yes | Dump EFUSE BLOCK0+BLOCK1 + decoded MAC and (where known) silicon revision |
+| `completions` / `man` | no | Emit shell completion / man-page source on stdout |
 | `nvs view` / `nvs export` | yes (or `--from-file`) | NVS partition inspection (TUI or JSON) |
 | `elf2image` | no | ELF → ESP firmware image |
 | `merge-bin` | no | Combine bins into one padded image |
