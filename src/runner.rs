@@ -49,6 +49,11 @@ pub fn run(cli: Cli) -> i32 {
     if matches!(cli.command, Command::ListPorts) {
         return handle_list_ports(cli.json);
     }
+    // `mcp` runs the MCP server on stdio; it never opens a port itself,
+    // it spawns child esparagus processes on demand.
+    if matches!(cli.command, Command::Mcp) {
+        return crate::mcp::run();
+    }
     // Required port for everything but `--help` and `--version`, which clap
     // handles itself. If --port is missing AND exactly one ESP-like
     // candidate is found on the system, auto-select it; otherwise list the
@@ -468,6 +473,7 @@ fn current_stage_name(cli: &Cli) -> String {
         Command::Monitor { .. } => "monitor",
         Command::FlashMonitor { .. } => "flash_monitor",
         Command::ListPorts => "list_ports",
+        Command::Mcp => "mcp",
     }
     .into()
 }
@@ -989,7 +995,8 @@ fn run_inner(
         | Command::MergeBin { .. }
         | Command::Monitor { .. }
         | Command::FlashMonitor { .. }
-        | Command::ListPorts => {
+        | Command::ListPorts
+        | Command::Mcp => {
             // These are dispatched before we ever open a port for the
             // protocol flow (offline ones via run_offline_if_applicable,
             // monitor + flash-monitor via their own branches in run());

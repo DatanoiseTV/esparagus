@@ -82,9 +82,24 @@ const CRASH_PATTERNS: &[(&str, &str)] = &[
 ];
 
 /// Sentinel lines that mark "the crash output is done" — we stop the
-/// context capture when we see one of these.  The chip reboots after
-/// printing them.
-const CRASH_END_SENTINELS: &[&str] = &["Rebooting...", "CPU halted.", "ELF file SHA256:"];
+/// context capture when we see one of these.
+///
+/// Two categories:
+///   * Reboot-bound: chip is about to reset, so context past this point
+///     is the next boot. `Rebooting...`, `CPU halted.`, `ELF file SHA256:`.
+///   * Non-fatal dumps (RISC-V WDT warnings that don't reset): the IDF
+///     panic handler emits a register dump then resumes the app. If we
+///     don't stop here, the context fills up with normal post-warning
+///     app logs that are unrelated. Sentinels: the RISC-V end-of-dump
+///     line ("Please enable CONFIG_ESP_SYSTEM_USE_FRAME_POINTER") and
+///     the Xtensa backtrace announcement.
+const CRASH_END_SENTINELS: &[&str] = &[
+    "Rebooting...",
+    "CPU halted.",
+    "ELF file SHA256:",
+    "Please enable CONFIG_ESP_SYSTEM_USE_FRAME_POINTER",
+    "Backtrace:",
+];
 
 /// Maximum lines / time to capture after a crash signature before
 /// emitting the `crash_context` event.

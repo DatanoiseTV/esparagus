@@ -262,6 +262,15 @@ pub enum Command {
         no_crash_detect: bool,
     },
 
+    /// Run as an MCP (Model Context Protocol) server over stdio.
+    /// Speaks JSON-RPC 2.0 on stdin/stdout and exposes the esparagus
+    /// tool surface to MCP-aware clients (Claude Code/Desktop, Cursor,
+    /// Goose, Junie, etc.). Each `tools/call` spawns a fresh child
+    /// `esparagus` process so the serial port is opened on-demand and
+    /// released after each call — other processes can still use the
+    /// port between MCP calls.
+    Mcp,
+
     /// Open a serial monitor on the chip's UART/USB-CDC and watch the
     /// output for expected/forbidden patterns.  GNU-expect-style: the
     /// command exits 0 on first --expect match, 30 on first --expect-not

@@ -10,6 +10,7 @@ pub mod error;
 pub mod esptool_compat;
 pub mod image;
 pub mod imagegen;
+pub mod mcp;
 pub mod monitor;
 pub mod nvs;
 pub mod observe;

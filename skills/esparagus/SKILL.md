@@ -249,6 +249,43 @@ The busybox-style esptool-compat layer (see
 `idf.py` invocation fails fast and clear instead of doing the wrong
 thing silently.
 
+## MCP server mode
+
+esparagus can also be driven over the **Model Context Protocol** —
+useful for clients that natively speak MCP (Claude Desktop, some
+Cursor configurations, IDE plugins). Start with:
+
+```sh
+esparagus mcp
+```
+
+It reads JSON-RPC 2.0 from stdin, writes responses + notifications to
+stdout, supports `initialize`, `tools/list`, `tools/call`, and `ping`.
+Each `tools/call` spawns a fresh `esparagus` child process so the
+serial port is opened on demand and released immediately after —
+other processes can keep using the port between calls.
+
+The MCP tool set mirrors the CLI: `list_ports`, `detect`, `read_mac`,
+`flash_id`, `partitions`, `read_partition`, `write_partition`,
+`erase_partition`, `write_flash`, `read_flash`, `erase_flash`,
+`backup`, `restore`, `monitor`, `flash_monitor`, `nvs_export`,
+`reset`, `elf2image`, `merge_bin`. Per-tool input schemas are
+delivered via `tools/list` — there's no separate schema file to keep
+in sync.
+
+Mid-call, the server streams every NDJSON event from the child as a
+`notifications/esparagus/event` notification, so an MCP client that
+subscribes gets the same live event firehose a `--json` CLI consumer
+sees. The final `tools/call` result contains:
+- a human-readable summary (chip, MAC, flash size, exit reason)
+- a structured JSON dump (`exit_code`, `tool`, `events[]`, `stderr`)
+- `isError: true` when the child exited non-zero
+
+For agents that already drive the CLI via Bash, the MCP path adds
+little — the CLI + NDJSON + Skill already covers it. MCP earns its
+keep with clients that don't have shell access or want typed tool
+calls without re-implementing argv construction.
+
 ## References
 
 - `references/EVENTS.md` — every NDJSON event and its fields.
