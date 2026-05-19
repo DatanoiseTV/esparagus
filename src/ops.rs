@@ -308,8 +308,10 @@ pub fn read_mac(conn: &mut Connection, chip: &Chip) -> Result<[u8; 6]> {
 /// Layout per upstream esptool `targets/esp32c3.py` (and identical
 /// paths on S2/S3/C2/C5/C6/H2/P4/...):
 ///
-///     bitstring = struct.pack(">II", mac1, mac0)[2:]
-///     return tuple(bitstring)
+/// ```text
+/// bitstring = struct.pack(">II", mac1, mac0)[2:]
+/// return tuple(bitstring)
+/// ```
 ///
 /// — i.e. mac1's low 16 bits carry MAC[0..2] (OUI MSB first), and
 /// mac0 carries MAC[2..6]. Packing both big-endian and trimming the

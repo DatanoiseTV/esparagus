@@ -1,0 +1,19 @@
+# Smoke test: verify the firmware reaches its main loop, doesn't
+# crash within the first 30s, and prints a known marker. Replace the
+# `expect = "..."` patterns to match your app.
+#
+#     esparagus --port /dev/cu.usbserial-XYZ expect examples/expect/boot-smoke.toml
+#
+# Exit codes:
+#   0  → "MAIN LOOP READY" matched within 30s
+#   12 → timed out waiting for the marker
+#   13 → "ASSERT" appeared (negative pattern)
+#   20 → built-in crash detector fired
+
+name = "boot-smoke"
+timeout_secs = 30
+
+[[step]]
+name = "wait-boot"
+expect = "MAIN LOOP READY"
+expect_not = "ASSERT|FATAL"

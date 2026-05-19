@@ -8,6 +8,35 @@ All notable changes to this project follow
 
 ### Added
 
+- `esparagus expect <script.toml>` — scriptable serial automation
+  (better-than-GNU-`expect`). TOML script of `send` / `expect` /
+  `expect_any` / `expect_not` steps with regex captures, mustache
+  `{{var}}` templates (`{{env.NAME}}` / `{{capture_name}}` /
+  `{{1}}`..`{{9}}` group refs), named branches with `goto`, and the
+  same built-in crash detectors as `monitor`. Stable exit codes
+  (0/12/13/20/31), one NDJSON event per step. Example scripts at
+  `examples/expect/`.
+- MCP `expect` tool wired to the new subcommand.
+
+### Changed
+
+- `monitor` and `flash-monitor` now default to **115200** baud for
+  the monitor session, not the global `--baud` (which is the
+  *flashing* rate and almost never matches what the running firmware
+  uses). New `--monitor-baud` flag overrides. Behaviour-breaking for
+  anyone who relied on the previous "monitor at --baud" defaulting.
+
+### Fixed
+
+- `read-mac` byte order on non-ESP32 chips. The pre-fix
+  implementation reversed the MAC end-for-end and printed a chip
+  with Espressif OUI `3C:DC:75:9A:EC:9C` as `9C:EC:9A:75:DC:3C`.
+  Matches upstream esptool / `esp_efuse_mac_get_default()` /
+  `idf.py monitor` now. Pinned by regression tests using real
+  bench-unit register values.
+
+### Added
+
 - `completions <shell>` and `man` subcommands emit shell completions
   and a roff-formatted man page on stdout (clap-complete +
   clap-mangen).

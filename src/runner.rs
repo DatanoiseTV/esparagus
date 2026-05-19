@@ -116,6 +116,26 @@ pub fn run(cli: Cli) -> i32 {
         );
     }
 
+    // expect: load + validate the script (which can fail without ever
+    // touching the port), then run it. Like monitor, this bypasses the
+    // chip-sync flow — the chip should already be running its firmware.
+    if let Command::Expect {
+        script,
+        no_reset,
+        no_crash_detect,
+    } = &cli.command
+    {
+        return run_expect(
+            script,
+            &port,
+            cli.baud,
+            *no_reset,
+            *no_crash_detect,
+            cli.json,
+            cli.log_file.as_deref(),
+        );
+    }
+
     // flash-monitor: do the write-flash, then drop straight into the
     // monitor at --monitor-baud. We synthesize a regular WriteFlash CLI
     // for phase 1 so the existing chip-flow handles it; then if phase 1
@@ -266,6 +286,49 @@ fn run_monitor(
         Err(e) => {
             emitter.error(Event::Error {
                 stage: "monitor".into(),
+                class: e.class().into(),
+                detail: e.to_string(),
+            });
+            match e.class() {
+                "port" => 10,
+                _ => 1,
+            }
+        }
+    }
+}
+
+fn run_expect(
+    script_path: &Path,
+    port: &str,
+    baud: u32,
+    no_reset: bool,
+    no_crash_detect: bool,
+    json: bool,
+    log_file: Option<&Path>,
+) -> i32 {
+    let emitter = match Emitter::new(json, log_file) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: could not open --log-file: {}", e);
+            return 2;
+        }
+    };
+    let script = match crate::expect::load(script_path) {
+        Ok(s) => s,
+        Err(e) => {
+            emitter.error(Event::Error {
+                stage: "expect".into(),
+                class: "script".into(),
+                detail: e.to_string(),
+            });
+            return crate::expect::Outcome::ParseError.exit_code();
+        }
+    };
+    match crate::expect::run(script, port, baud, &emitter, no_reset, no_crash_detect) {
+        Ok(o) => o.exit_code(),
+        Err(e) => {
+            emitter.error(Event::Error {
+                stage: "expect".into(),
                 class: e.class().into(),
                 detail: e.to_string(),
             });
@@ -540,6 +603,7 @@ fn current_stage_name(cli: &Cli) -> String {
         Command::MergeBin { .. } => "merge_bin",
         Command::Monitor { .. } => "monitor",
         Command::FlashMonitor { .. } => "flash_monitor",
+        Command::Expect { .. } => "expect",
         Command::ListPorts => "list_ports",
         Command::Mcp => "mcp",
         Command::Completions { .. } => "completions",
@@ -1097,6 +1161,7 @@ fn run_inner(
         | Command::MergeBin { .. }
         | Command::Monitor { .. }
         | Command::FlashMonitor { .. }
+        | Command::Expect { .. }
         | Command::ListPorts
         | Command::Mcp
         | Command::Completions { .. }

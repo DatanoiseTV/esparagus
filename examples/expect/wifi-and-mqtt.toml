@@ -1,0 +1,48 @@
+# Drive a chip through Wi-Fi join + MQTT subscribe, using env vars for
+# secrets, regex captures for the assigned IP, and `expect_any` to
+# branch between a clean join and a known retry path.
+#
+# Required env: WIFI_SSID, WIFI_PSK, MQTT_TOPIC.
+#
+#     WIFI_SSID=guest WIFI_PSK=hunter2 MQTT_TOPIC=devices/+/state \
+#       esparagus --port /dev/cu.usbserial-XYZ expect examples/expect/wifi-and-mqtt.toml
+
+name = "wifi-and-mqtt"
+timeout_secs = 20
+
+[[step]]
+name = "wait-prompt"
+expect = "esparagus> "
+timeout_secs = 5
+
+[[step]]
+name = "ssid"
+send = "wifi join {{env.WIFI_SSID}} {{env.WIFI_PSK}}\n"
+# expect_any branches: clean join → set up MQTT; retryable failure
+# → loop back; permanent failure → terminal fail.
+expect_any = [
+    { pattern = "GOT_IP (\\d+\\.\\d+\\.\\d+\\.\\d+)", goto = "have-ip" },
+    { pattern = "WIFI_RETRY",                          goto = "ssid" },
+    { pattern = "AUTH_FAIL",                            goto = "fail" },
+]
+
+[[step]]
+name = "have-ip"
+# Stash the IP from group 1 into a named variable for later use.
+capture = { ip = "GOT_IP (\\d+\\.\\d+\\.\\d+\\.\\d+)" }
+send = "mqtt subscribe {{env.MQTT_TOPIC}}\n"
+expect = "SUBSCRIBED ack"
+timeout_secs = 8
+
+[[step]]
+name = "verify"
+send = "status\n"
+expect = "ip={{ip}}"
+
+[[step]]
+name = "done"
+ok = true
+
+[[step]]
+name = "fail"
+ok = false

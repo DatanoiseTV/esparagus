@@ -187,6 +187,43 @@ pub enum Event {
         ok: bool,
         duration_ms: u128,
     },
+
+    // ---- Expect-script subcommand ----
+    ExpectScriptStart {
+        name: Option<String>,
+        step_count: usize,
+    },
+    ExpectStepBegin {
+        name: String,
+        send_preview: Option<String>,
+        expect_summary: Option<String>,
+        timeout_ms: u64,
+    },
+    ExpectStepMatch {
+        name: String,
+        pattern: String,
+        line: String,
+        captures: std::collections::HashMap<String, String>,
+    },
+    ExpectStepBranch {
+        from: String,
+        to: String,
+    },
+    ExpectStepTimeout {
+        name: String,
+        pattern: String,
+        timeout_ms: u64,
+    },
+    ExpectStepNegativeMatch {
+        name: String,
+        pattern: String,
+        line: String,
+    },
+    ExpectScriptComplete {
+        ok: bool,
+        steps_run: usize,
+        final_step: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -628,6 +665,82 @@ fn human(e: &LoggedEvent, c: bool) -> String {
                 red(bold("FAILED", c), c)
             },
             duration_ms
+        ),
+        Event::ExpectScriptStart { name, step_count } => format!(
+            "{} expect script {} ({} step{})",
+            ts,
+            bold(name.as_deref().unwrap_or("<unnamed>"), c),
+            step_count,
+            if *step_count == 1 { "" } else { "s" }
+        ),
+        Event::ExpectStepBegin {
+            name,
+            send_preview,
+            expect_summary,
+            timeout_ms,
+        } => {
+            let mut parts = vec![format!("{} step {}", ts, cyan(name, c))];
+            if let Some(s) = send_preview {
+                parts.push(format!("send={:?}", s));
+            }
+            if let Some(e) = expect_summary {
+                parts.push(format!("expect={:?}", e));
+            }
+            parts.push(format!("timeout={}ms", timeout_ms));
+            parts.join(" ")
+        }
+        Event::ExpectStepMatch {
+            name,
+            pattern,
+            line,
+            captures: _,
+        } => format!(
+            "{} step {} matched {:?} on {:?}",
+            ts,
+            cyan(name, c),
+            pattern,
+            line
+        ),
+        Event::ExpectStepBranch { from, to } => {
+            format!("{} step {} → {}", ts, cyan(from, c), cyan(to, c))
+        }
+        Event::ExpectStepTimeout {
+            name,
+            pattern,
+            timeout_ms,
+        } => format!(
+            "{} step {} TIMEOUT after {}ms waiting for {:?}",
+            ts,
+            red(name, c),
+            timeout_ms,
+            pattern
+        ),
+        Event::ExpectStepNegativeMatch {
+            name,
+            pattern,
+            line,
+        } => format!(
+            "{} step {} negative match {:?} on {:?}",
+            ts,
+            red(name, c),
+            pattern,
+            line
+        ),
+        Event::ExpectScriptComplete {
+            ok,
+            steps_run,
+            final_step,
+        } => format!(
+            "{} expect script {} ({} step{} run, final={})",
+            ts,
+            if *ok {
+                green(bold("ok", c), c)
+            } else {
+                red(bold("FAILED", c), c)
+            },
+            steps_run,
+            if *steps_run == 1 { "" } else { "s" },
+            cyan(final_step, c)
         ),
     }
 }

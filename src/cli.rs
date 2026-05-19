@@ -372,6 +372,26 @@ pub enum Command {
         #[arg(required = true, num_args = 2..)]
         args: Vec<String>,
     },
+
+    /// Run a TOML expect script against the chip's serial port.
+    /// Send/expect/branching/captures with crash detection — like GNU
+    /// `expect` but with structured NDJSON output and stable exit
+    /// codes for CI / LLM agents.  See README and
+    /// references/EXPECT_PATTERNS.md for the script grammar.
+    Expect {
+        /// Path to a TOML script (see module docs for shape).
+        script: PathBuf,
+        /// Don't pulse EN/DTR before the first step. Useful when the
+        /// firmware is already running and you don't want to interrupt
+        /// it.
+        #[arg(long)]
+        no_reset: bool,
+        /// Disable the built-in crash detector (panic / wdt / abort /
+        /// ...). Off by default — crashes during expect waits abort
+        /// the run with exit 20.
+        #[arg(long)]
+        no_crash_detect: bool,
+    },
 }
 
 #[derive(Copy, Clone, Debug, clap::ValueEnum)]

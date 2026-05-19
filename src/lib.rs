@@ -8,6 +8,7 @@ pub mod cli;
 pub mod discover;
 pub mod error;
 pub mod esptool_compat;
+pub mod expect;
 pub mod image;
 pub mod imagegen;
 pub mod mcp;

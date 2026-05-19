@@ -48,7 +48,10 @@ pub enum Outcome {
 /// Order matters only as a tiebreaker — the first one to match wins.  We
 /// list the most specific signatures first so e.g. an `assert failed` line
 /// isn't mis-classified as a generic panic via a more permissive pattern.
-const CRASH_PATTERNS: &[(&str, &str)] = &[
+///
+/// `pub(crate)` so the expect-script runner (`src/expect.rs`) can share
+/// the exact same detection set without duplication.
+pub(crate) const CRASH_PATTERNS: &[(&str, &str)] = &[
     // Watchdog (often appears before the actual panic so check it first)
     (r"Task watchdog got triggered", "wdt"),
     (r"\bWDT\b.*timeout", "wdt"),
@@ -93,7 +96,7 @@ const CRASH_PATTERNS: &[(&str, &str)] = &[
 ///     app logs that are unrelated. Sentinels: the RISC-V end-of-dump
 ///     line ("Please enable CONFIG_ESP_SYSTEM_USE_FRAME_POINTER") and
 ///     the Xtensa backtrace announcement.
-const CRASH_END_SENTINELS: &[&str] = &[
+pub(crate) const CRASH_END_SENTINELS: &[&str] = &[
     "Rebooting...",
     "CPU halted.",
     "ELF file SHA256:",
@@ -103,8 +106,8 @@ const CRASH_END_SENTINELS: &[&str] = &[
 
 /// Maximum lines / time to capture after a crash signature before
 /// emitting the `crash_context` event.
-const CRASH_CONTEXT_MAX_LINES: usize = 200;
-const CRASH_CONTEXT_MAX_DURATION: Duration = Duration::from_secs(5);
+pub(crate) const CRASH_CONTEXT_MAX_LINES: usize = 200;
+pub(crate) const CRASH_CONTEXT_MAX_DURATION: Duration = Duration::from_secs(5);
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(

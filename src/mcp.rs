@@ -540,6 +540,22 @@ fn tool_catalog() -> Vec<Value> {
         }
     }));
     tools.push(json!({
+        "name": "expect",
+        "description": "Run a TOML expect script (send/expect/expect_any/captures/branches, with crash detection) against the chip's serial port. Like GNU expect but with structured NDJSON events and stable exit codes for CI / LLM agents.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "port":             port_prop,
+                "baud":             baud_prop,
+                "script":           {"type": "string", "description": "Path to a .toml expect script."},
+                "no_reset":         {"type": "boolean", "default": false},
+                "no_crash_detect":  {"type": "boolean", "default": false}
+            },
+            "required": ["script"],
+            "additionalProperties": false
+        }
+    }));
+    tools.push(json!({
         "name": "flash_monitor",
         "description": "Single-shot flash + monitor: writes the files, then drops directly into the serial monitor with --expect/--expect-not/--timeout. The feedback-loop default for AI agents.",
         "inputSchema": {
@@ -764,8 +780,30 @@ fn tool_to_cli(name: &str, args: &Value) -> Result<Vec<String>, String> {
             {
                 argv.push("--no-compress".into());
             }
+            // monitor_baud handled via append_monitor_flags (shared
+            // with the `monitor` tool — defaults to 115200 on the
+            // CLI side, MCP only emits the flag when caller supplied
+            // one).
             append_monitor_flags(&mut argv, args);
             append_pairs(&mut argv, args)?;
+        }
+        "expect" => {
+            argv.push("expect".into());
+            if args
+                .get("no_reset")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                argv.push("--no-reset".into());
+            }
+            if args
+                .get("no_crash_detect")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                argv.push("--no-crash-detect".into());
+            }
+            argv.push(required_str(args, "script")?);
         }
         other => return Err(format!("unknown tool: {other}")),
     }
@@ -1146,6 +1184,7 @@ mod tests {
             "restore",
             "monitor",
             "flash_monitor",
+            "expect",
             "nvs_export",
             "reset",
             "elf2image",
