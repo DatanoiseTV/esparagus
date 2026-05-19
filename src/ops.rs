@@ -299,22 +299,34 @@ pub fn read_mac(conn: &mut Connection, chip: &Chip) -> Result<[u8; 6]> {
     }
     let mac0 = conn.read_reg(chip.mac_efuse_reg)?;
     let mac1 = conn.read_reg(chip.mac_efuse_reg + 4)?;
-    // Low 4 bytes from mac0, top 2 bytes from low 16 bits of mac1, in network
-    // order — matches upstream `read_mac()` in S2/S3/C3 paths.
+    Ok(unpack_mac_from_regs(mac0, mac1))
+}
+
+/// Unpack the (mac0, mac1) EFUSE register pair into a 6-byte MAC in
+/// printable / network order (MAC[0] = OUI MSB).
+///
+/// Layout per upstream esptool `targets/esp32c3.py` (and identical
+/// paths on S2/S3/C2/C5/C6/H2/P4/...):
+///
+///     bitstring = struct.pack(">II", mac1, mac0)[2:]
+///     return tuple(bitstring)
+///
+/// — i.e. mac1's low 16 bits carry MAC[0..2] (OUI MSB first), and
+/// mac0 carries MAC[2..6]. Packing both big-endian and trimming the
+/// leading two padding bytes yields the MAC bytes MSB-first.
+///
+/// **Do not reverse the result.** A previous version of this code
+/// applied a final `mac[5-i]` swap, which flipped every non-ESP32
+/// MAC end-for-end and printed `9C:EC:9A:75:DC:3C` instead of
+/// `3C:DC:75:9A:EC:9C` for a chip with Espressif OUI 3C:DC:75. The
+/// `mac_unpack_regression_*` tests pin the correct layout.
+pub fn unpack_mac_from_regs(mac0: u32, mac1: u32) -> [u8; 6] {
     let mut buf = [0u8; 8];
     buf[0..2].copy_from_slice(&(mac1 as u16).to_be_bytes());
     buf[2..6].copy_from_slice(&mac0.to_be_bytes());
     let mut mac = [0u8; 6];
     mac.copy_from_slice(&buf[0..6]);
-    // The natural order is high→low; we returned the bytes in the layout
-    // that matches `XX:XX:XX:XX:XX:XX` when each byte is printed.
-    // Reverse so that mac[0] is the OUI MSB.
-    // (Validated against esptool's `read_mac` which returns tuple(reversed)).
-    let mut out = [0u8; 6];
-    for i in 0..6 {
-        out[i] = mac[5 - i];
-    }
-    Ok(out)
+    mac
 }
 
 /// Format a MAC as XX:XX:XX:XX:XX:XX.
@@ -769,5 +781,47 @@ pub fn read_flash(
                 return Ok(data);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unpack_mac_from_regs;
+
+    /// Regression for the EFUSE → printable MAC layout. Values derived
+    /// from a real ESP32-C5 (Espressif OUI `3C:DC:75`) bench unit:
+    ///
+    /// Suppose the actual MAC is `3C:DC:75:9A:EC:9C`. EFUSE byte
+    /// layout (little-endian within each 32-bit word):
+    ///   * `MAC_EFUSE_REG` word: bytes [MAC5, MAC4, MAC3, MAC2]
+    ///     = [0x9C, 0xEC, 0x9A, 0x75] → u32 LE = 0x759AEC9C
+    ///   * `MAC_EFUSE_REG + 4` word low 16 bits: bytes [MAC1, MAC0]
+    ///     = [0xDC, 0x3C] → u32 LE = 0x00003CDC
+    ///
+    /// `unpack_mac_from_regs` must return `[3C, DC, 75, 9A, EC, 9C]`
+    /// — OUI MSB first — matching `tuple(struct.pack(">II", mac1, mac0)[2:])`
+    /// in upstream esptool.
+    #[test]
+    fn mac_unpack_regression_espressif_oui_3c_dc_75() {
+        let mac0: u32 = 0x759A_EC9C;
+        let mac1: u32 = 0x0000_3CDC;
+        assert_eq!(
+            unpack_mac_from_regs(mac0, mac1),
+            [0x3C, 0xDC, 0x75, 0x9A, 0xEC, 0x9C],
+            "MAC bytes must be MSB-first; previous buggy implementation \
+             reversed and produced 9C:EC:9A:75:DC:3C"
+        );
+    }
+
+    #[test]
+    fn mac_unpack_round_trip() {
+        // Build a known MAC, pack it into (mac0, mac1) the way EFUSE
+        // would store it, unpack, and confirm we recover the input.
+        let want: [u8; 6] = [0x24, 0x0A, 0xC4, 0xFE, 0x12, 0x34];
+        // mac0 = bytes [MAC5, MAC4, MAC3, MAC2] LE
+        let mac0 = u32::from_le_bytes([want[5], want[4], want[3], want[2]]);
+        // mac1 = bytes [MAC1, MAC0, 0, 0] LE
+        let mac1 = u32::from_le_bytes([want[1], want[0], 0, 0]);
+        assert_eq!(unpack_mac_from_regs(mac0, mac1), want);
     }
 }
