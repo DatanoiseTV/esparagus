@@ -220,6 +220,20 @@ you what to try. Each entry has a stable `kind` (e.g.
   pulse) which avoids the GPIO0-stuck-low download-mode trap that
   caught the bench session.
 
+- **`reboot_loop` ≠ chip is broken — sometimes the console is going
+  somewhere else.** If the `transport_info` event reports a USB
+  VID/PID *other* than Espressif's `0x303a` (i.e. you're talking to
+  the chip through a CH340/CH343 `0x1a86`, CP210x `0x10c4`, or FTDI
+  `0x0403` bridge), and the build's `sdkconfig` has
+  `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`, every `printf` / `ESP_LOG`
+  is being routed to the chip's *unused native USB peripheral*, not
+  out UART0 to the bridge. The chip runs fine, but esparagus's
+  monitor sees zero app output and the detector reports
+  `reboot_loop`. Fix is in IDF: switch to
+  `CONFIG_ESP_CONSOLE_UART=y` (or `=DEFAULT`). Cross-validate by
+  comparing `transport_info.usb_vid` against the chip's native VID
+  (always `0x303a`) before recommending firmware changes.
+
 ## When NOT to use esparagus
 
 - **eFuse burn**: not implemented (read planned). Use `espefuse.py`.

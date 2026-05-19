@@ -99,7 +99,48 @@ esparagus:
 | `Cache disabled but cached memory region accessed` | `cache` | ESP cache fault |
 | `Brownout detector was triggered` | `brownout` | ROM brownout |
 | `boot:0x.. \(DOWNLOAD` | `download_loop` | Chip dropped into ROM DOWNLOAD mode after reset — i.e. the freshly-written firmware isn't actually booting. Often means the BOOT strap is held low (auto-reset circuit, faulty boot button) or the image at the app offset is invalid. |
-| `^ESP-ROM:` (stateful, ≥2 hits per monitor session) | `reboot_loop` | Chip is rebooting in a tight loop. First ROM banner is expected (our own reset_to_app produced it); the second means the second-stage bootloader / app reset on its own. Boot mode is normal (e.g. `SPI_FAST_FLASH_BOOT`) — the chip just doesn't make it far enough to print any app log. Usual causes: brownout during RF init, panic in `app_main` precursors before `esp_log` is wired, IDF version skew between bootloader and app. Distinct from `download_loop`. |
+| `^ESP-ROM:` (stateful, ≥2 hits per monitor session) | `reboot_loop` | Chip is rebooting in a tight loop. First ROM banner is expected (our own reset_to_app produced it); the second means the second-stage bootloader / app reset on its own. Boot mode is normal (e.g. `SPI_FAST_FLASH_BOOT`) — the chip just doesn't make it far enough to print any app log. Distinct from `download_loop`. |
+
+### `reboot_loop` causes, in order of likelihood
+
+When `reboot_loop` fires, walk this list before blaming the firmware:
+
+1. **Console-on-wrong-interface.** If the `transport_info` event
+   reports a non-Espressif USB VID (CH340/CH343 `0x1a86`, CP210x
+   `0x10c4`, FTDI `0x0403`), but the IDF build has
+   `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`, every log line is going
+   to the chip's unused native USB peripheral instead of out UART0
+   to your bridge. The chip is fine and running, you just can't see
+   it. **The signature in `crash_context` is the dead giveaway: you
+   see the IDF second-stage bootloader's lines** (`SPI mode`, `load`,
+   `entry`) — those *are* routed through UART0 because the ROM
+   bootloader hard-codes them there. But the ESP-IDF app uses
+   whatever the menuconfig'd console says, which is the native USB.
+   Switch `sdkconfig` to `CONFIG_ESP_CONSOLE_UART=y` (or
+   `=DEFAULT`) and reflash. Bench-validated 2026-05-19 on an
+   ESP32-C5 through a CH343.
+
+2. **Brownout during early init.** Wi-Fi / BLE radio initialisation
+   draws inrush spikes (>300 mA on C5). On a thin USB cable, a
+   powered hub without enough current per port, or a marginal PSU,
+   the chip browns out before `esp_log_init` finishes. The
+   `Brownout detector was triggered` line *usually* prints first,
+   but if the brownout fires before the brownout detector itself is
+   armed (during the very first hundred milliseconds), no print
+   makes it out and it manifests as a silent reboot loop. Move to a
+   direct USB port + thick cable to test.
+
+3. **Panic in `app_main` precursors before `esp_log_init`.** C++
+   static constructors, custom early hardware init, mis-allocated
+   stack — anything that faults before the logging subsystem is up
+   eats the panic message. Add a single `ets_printf("PRE\n");` at
+   the very top of `app_main` (that uses the ROM printf, works
+   before IDF logging is set up). If `PRE` appears, the crash is
+   deeper in your app; if it doesn't, the crash is in IDF startup.
+
+4. **IDF version skew between bootloader and app.** Rebuilding only
+   one of them leaves an incompatible boot-args layout. `idf.py
+   fullclean && idf.py build` to rebuild both atomically.
 
 The patterns are checked in this order; the first match wins.
 
