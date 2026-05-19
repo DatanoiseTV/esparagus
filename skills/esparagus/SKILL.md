@@ -147,6 +147,7 @@ pass `--table partitions.csv` (IDF-format CSV).
 | 12 | Chip mismatch with `--chip` flag | Remove `--chip` or set the correct one. |
 | 13 | Flash op failed (write / MD5 mismatch / read error) | Lower baud and retry; check power. |
 | 14 | Stub loader upload or handshake failed | Try `--no-stub` for slower-but-safer ROM-only. |
+| 15 | Port held by another process | Another `esparagus` is racing (flock held), or `screen` / `minicom` / debugger has the OS fd via TIOCEXCL. Wait, kill the other consumer, or close the other terminal. |
 | 20 | Image header invalid | Image is for a different chip, or corrupted. |
 | 30 | Monitor `--expect-not` pattern matched | Firmware emitted a forbidden line. Inspect log. |
 | 31 | Monitor timed out without an `--expect` match | Firmware didn't reach the expected state in time. |
