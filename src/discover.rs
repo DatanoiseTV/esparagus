@@ -1,13 +1,11 @@
 //! Cross-platform discovery of USB-attached ESP-family devices.
 //!
-//! Combines two sources:
-//!   1. `serialport::available_ports()` — the OS-mapped serial-port list.
-//!      Authoritative for the device path you actually open (`/dev/cu.*`,
-//!      `/dev/ttyUSB*`, `COM*`).
-//!   2. `nusb::list_devices()` — raw USB enumeration. Enriches each entry
-//!      with the manufacturer / product / serial string descriptors that
-//!      `serialport`'s portable metadata often leaves empty (especially on
-//!      Linux).
+//! Uses `serialport::available_ports()` as the sole enumeration source.
+//! That call goes through each OS's native USB-to-serial mapping
+//! (IORegistry on macOS, udev/sysfs on Linux, WMI on Windows), which
+//! already gives us the device path, USB VID/PID, and — on every
+//! platform we ship — the manufacturer, product, and serial number
+//! string descriptors when present.
 //!
 //! What we surface: ports whose USB VID matches Espressif (0x303A) or a
 //! known USB-UART bridge chip used on common ESP dev boards (Silicon Labs
@@ -132,7 +130,6 @@ pub fn list_esp_candidates() -> Vec<DiscoveredPort> {
             }
         }
     }
-    enrich_with_nusb(&mut map);
     map.into_values().collect()
 }
 
@@ -168,35 +165,6 @@ fn identity_key(vid: u16, pid: u16, serial: Option<&str>) -> String {
 
 fn prefers_existing(existing_path: &str, new_path: &str) -> bool {
     existing_path.starts_with("/dev/cu.") && new_path.starts_with("/dev/tty.")
-}
-
-/// Walk the raw USB device list and fill in any manufacturer / product
-/// string descriptors that the serialport-rs enumeration left empty.
-/// Best-effort: if nusb itself fails (no USB permissions on Linux, etc.)
-/// we just skip enrichment rather than fail the whole discover call.
-fn enrich_with_nusb(map: &mut BTreeMap<String, DiscoveredPort>) {
-    // nusb 0.2 returns a `MaybeFuture` so the same call works in sync and
-    // async callers; we're sync, so .wait() block-resolves it.
-    use nusb::MaybeFuture;
-    let Ok(devices) = nusb::list_devices().wait() else {
-        return;
-    };
-    for dev in devices {
-        let key = identity_key(dev.vendor_id(), dev.product_id(), dev.serial_number());
-        let Some(port) = map.get_mut(&key) else {
-            continue;
-        };
-        if port.manufacturer.is_none() {
-            if let Some(s) = dev.manufacturer_string() {
-                port.manufacturer = Some(s.to_string());
-            }
-        }
-        if port.product.is_none() {
-            if let Some(s) = dev.product_string() {
-                port.product = Some(s.to_string());
-            }
-        }
-    }
 }
 
 #[cfg(test)]

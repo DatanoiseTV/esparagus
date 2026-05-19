@@ -114,7 +114,7 @@ pass `--table partitions.csv` (IDF-format CSV).
 | Subcommand | Needs port | What it does |
 |---|---|---|
 | `detect` | yes | Identify chip + MAC + flash ID. Use this first when you don't know what's connected. **Note: the subcommand is `detect`, not `chip-id` or `chip_id`** — though those are accepted as aliases. |
-| `list-ports` | **no** | Walk the OS serial port list + USB descriptors via nusb and print ESP-likely devices (Espressif-native USB, CP210x, CH34x, FTDI bridges). De-duplicates the macOS cu./tty. variants. |
+| `list-ports` | **no** | Walk the OS serial port list (IORegistry on macOS, udev/sysfs on Linux, WMI on Windows) and print ESP-likely devices: Espressif-native USB (VID 0x303A) plus the common UART bridges (CP210x, CH34x, FTDI). Includes manufacturer / product / serial number from the USB descriptors when the OS exposes them. De-duplicates the macOS cu./tty. variants. |
 | `read-mac` | yes | Read base MAC from EFUSE. |
 | `flash-id` | yes | SPI flash JEDEC ID + decoded size (MB). |
 | `erase-flash` | yes | Erase the entire chip. **Destructive.** |

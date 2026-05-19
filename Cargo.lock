@@ -455,7 +455,6 @@ dependencies = [
  "md-5",
  "miniz_oxide",
  "nix 0.29.0",
- "nusb",
  "proptest",
  "ratatui",
  "regex",
@@ -691,17 +690,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "617ee6cf8e3f66f3b4ea67a4058564628cde41901316e19f559e14c7c72c5e7b"
 dependencies = [
  "core-foundation-sys",
- "mach2 0.4.3",
-]
-
-[[package]]
-name = "io-kit-sys"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06d3a048d09fbb6597dbf7c69f40d14df4a49487db1487191618c893fc3b1c26"
-dependencies = [
- "core-foundation-sys",
- "mach2 0.5.0",
+ "mach2",
 ]
 
 [[package]]
@@ -821,15 +810,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mach2"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a1b95cd5421ec55b445b5ae102f5ea0e768de1f82bd3001e11f426c269c3aea"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -928,24 +908,6 @@ name = "number_prefix"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
-
-[[package]]
-name = "nusb"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a330b3bc7f8b4fc729a4c63164b3927eeeaced198222a3ce6b8b6e034851b7a"
-dependencies = [
- "core-foundation",
- "core-foundation-sys",
- "futures-core",
- "io-kit-sys 0.5.0",
- "linux-raw-sys 0.12.1",
- "log",
- "once_cell",
- "rustix 1.1.4",
- "slab",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "once_cell"
@@ -1299,9 +1261,9 @@ dependencies = [
  "cfg-if",
  "core-foundation",
  "core-foundation-sys",
- "io-kit-sys 0.4.1",
+ "io-kit-sys",
  "libudev",
- "mach2 0.4.3",
+ "mach2",
  "nix 0.26.4",
  "scopeguard",
  "unescaper",
