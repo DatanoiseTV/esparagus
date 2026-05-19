@@ -4,11 +4,27 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
 license = "GPL-2.0-or-later"
+authors = ["Sylwester Bala <sylwester@teile-elektronik.com>"]
 description = "ESP32 family flasher with structured observability for CI/CD and LLM feedback loops"
 repository = "https://github.com/DatanoiseTV/esparagus"
+homepage = "https://github.com/DatanoiseTV/esparagus"
+documentation = "https://docs.rs/esparagus"
 readme = "README.md"
 keywords = ["esp32", "flash", "embedded", "esptool", "ci"]
 categories = ["embedded", "command-line-utilities", "development-tools"]
+include = [
+    "src/**/*.rs",
+    "stubs/**/*.json",
+    "Cargo.toml",
+    "Cargo.lock",
+    "LICENSE*",
+    "README.md",
+    "CHANGELOG.md",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [[bin]]
 name = "esparagus"

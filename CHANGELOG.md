@@ -4,6 +4,41 @@ All notable changes to this project follow
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `completions <shell>` and `man` subcommands emit shell completions
+  and a roff-formatted man page on stdout (clap-complete +
+  clap-mangen).
+- `merge-bin --format uf2` produces a Microsoft UF2 container with
+  the correct per-chip family ID (looked up from upstream esptool's
+  `targets/*.py:UF2_FAMILY_ID`). `--no-md5` clears the per-block MD5
+  trailer.
+- `read-efuse` reads BLOCK0+BLOCK1 of the EFUSE peripheral as 32-bit
+  words plus a decoded BASE_MAC (all chips) and silicon revision
+  (ESP32-P4 today). EFUSE burn intentionally remains out of scope
+  for v0.x — use `espefuse.py` for that.
+- MCP server now honours `notifications/cancelled` mid-call (SIGINT
+  to the spawned child) and emits typed `notifications/progress`
+  when the client supplied a `_meta.progressToken`.
+- `.github/workflows/release.yml` builds prebuilt binaries for
+  Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64 on
+  every `v*` tag, with per-asset SHA256 sums.
+- `dist/homebrew/esparagus.rb` template formula for publishing to a
+  Homebrew tap (`brew tap DatanoiseTV/esparagus && brew install
+  esparagus`).
+- Integration test suite (`tests/cli_integration.rs`) exercising
+  the binary end-to-end: --version / --help / list-ports NDJSON
+  shape / merge-bin UF2 byte structure / silent-PTY chip-flow error
+  path.
+
+### Changed
+
+- Cargo.toml gains `authors`, `homepage`, `documentation`,
+  `include` allowlist, and `metadata.docs.rs` — package is now
+  publication-ready (`cargo publish --dry-run` clean).
+
 ## [0.1.0] — 2026-05-18
 
 First public release.
